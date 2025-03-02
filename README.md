@@ -14,6 +14,65 @@
   - プライベートサブネットに配置
   - MySQLクライアントがプリインストール済み
 
+## 構成図
+
+```mermaid
+graph TB
+    %% 外部ユーザー
+    User((ユーザー))
+
+    %% AWS クラウド
+    subgraph AWS["AWS Cloud"]
+        %% VPC
+        subgraph VPC["VPC (10.0.0.0/16)"]
+            %% パブリックサブネット
+            subgraph PublicSubnets["パブリックサブネット"]
+                PublicSubnet1["パブリックサブネット1<br>10.0.1.0/24<br>AZ1"]
+                PublicSubnet2["パブリックサブネット2<br>10.0.2.0/24<br>AZ2"]
+            end
+
+            %% プライベートサブネット
+            subgraph PrivateSubnets["プライベートサブネット"]
+                subgraph PrivateSubnet1["プライベートサブネット1<br>10.0.3.0/24<br>AZ1"]
+                    %% EC2踏み台サーバー
+                    EC2["踏み台EC2インスタンス<br>MySQL Client"]
+                end
+
+                PrivateSubnet2["プライベートサブネット2<br>10.0.4.0/24<br>AZ2"]
+
+                %% RDSインスタンス
+                subgraph MasterDB["マスターDBクラスター"]
+                    RDS1["RDS1-Master<br>hogedb<br>Aurora MySQL 8.0"]
+                end
+
+                subgraph SecondDB["セカンドDBクラスター"]
+                    RDS2["RDS2-Second<br>fugadb<br>Aurora MySQL 8.0"]
+                end
+            end
+        end
+
+        %% SSMエンドポイント
+        SSM["SSM<br>エンドポイント"]
+    end
+
+    %% 接続関係
+    User -->|SSM Session| SSM
+    SSM -->|接続| EC2
+    EC2 -->|MySQL接続| RDS1
+    EC2 -->|MySQL接続| RDS2
+
+    %% スタイル設定
+    classDef subnet fill:#e4f7fb,stroke:#333,stroke-width:1px;
+    classDef ec2 fill:#f9d77e,stroke:#333,stroke-width:1px;
+    classDef rds fill:#a1d4b1,stroke:#333,stroke-width:1px;
+    classDef service fill:#f8cecc,stroke:#333,stroke-width:1px;
+
+    class PublicSubnet1,PublicSubnet2,PrivateSubnet1,PrivateSubnet2 subnet;
+    class EC2 ec2;
+    class RDS1,RDS2 rds;
+    class SSM service;
+```
+
 ## 前提条件
 
 - AWS CLIがインストールされていること
@@ -168,10 +227,6 @@ aws cloudformation delete-stack --stack-name rds-replication-stack
 - RDSインスタンスとEC2インスタンスには料金が発生します。使用後は忘れずに削除してください
 - EC2インスタンスはプライベートサブネットに配置されており、インターネットアクセスはありません
 - SSM接続のためのVPCエンドポイントが設定されています
-
-## ライセンス
-
-## 連絡先
 
 ## SSMポートフォワーディングを使用したRDSへの接続
 
