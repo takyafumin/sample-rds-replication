@@ -14,30 +14,30 @@ graph TD
         subgraph "プライベートサブネット"
             DMS["DMSレプリケーション<br>インスタンス"]
 
-            subgraph "マスターDBクラスター"
-                MasterDB["Aurora MySQL<br>(ターゲット)"]
-                MasterDBR["Aurora MySQL<br>レプリカ"]
+            subgraph "ターゲットDBクラスター"
+                TargetDB["Aurora MySQL<br>(ターゲット)"]
+                TargetDBR["Aurora MySQL<br>レプリカ"]
             end
 
-            subgraph "セカンドDBクラスター"
-                SecondDB["Aurora MySQL<br>(ソース)"]
-                SecondDBR["Aurora MySQL<br>レプリカ"]
+            subgraph "ソースDBクラスター"
+                SourceDB["Aurora MySQL<br>(ソース)"]
+                SourceDBR["Aurora MySQL<br>レプリカ"]
             end
         end
     end
 
     User["ユーザー"] -->|SSM接続| EC2
-    EC2 -->|管理| MasterDB
-    EC2 -->|管理| SecondDB
+    EC2 -->|管理| TargetDB
+    EC2 -->|管理| SourceDB
 
-    SecondDB -->|ソース<br>エンドポイント| DMS
-    DMS -->|ターゲット<br>エンドポイント| MasterDB
+    SourceDB -->|ソース<br>エンドポイント| DMS
+    DMS -->|ターゲット<br>エンドポイント| TargetDB
 
-    SecondDB -->|レプリケーション| SecondDBR
-    MasterDB -->|レプリケーション| MasterDBR
+    SourceDB -->|レプリケーション| SourceDBR
+    TargetDB -->|レプリケーション| TargetDBR
 
     classDef aws fill:#FF9900,stroke:#232F3E,color:white;
-    class EC2,DMS,MasterDB,MasterDBR,SecondDB,SecondDBR aws;
+    class EC2,DMS,TargetDB,TargetDBR,SourceDB,SourceDBR aws;
 ```
 
 詳細なアーキテクチャについては、[アーキテクチャ概要](doc/architecture.md)を参照してください。
@@ -55,9 +55,9 @@ graph TD
 
 このソリューションは以下の3つのCloudFormationスタックで構成されています：
 
-1. **iam-setup/dms-iam-roles.yaml** - DMSに必要なIAMロールを作成
-2. **templates/rds-replication.yaml** - 基本的なAurora MySQL環境（マスターDBとセカンドDB）を構築
-3. **templates/dms-replication.yaml** - DMSレプリケーションを設定し、セカンドDBからマスターDBへのレプリケーションを構成
+1. **templates/dms-iam-roles.yaml** - DMSに必要なIAMロールを作成
+2. **templates/rds-replication.yaml** - 基本的なAurora MySQL環境（ターゲットDBとソースDB）を構築
+3. **templates/dms-replication.yaml** - DMSレプリケーションを設定し、ソースDBからターゲットDBへのレプリケーションを構成
 
 ## クイックスタート
 
@@ -97,27 +97,27 @@ IAMロールのデプロイ状況は以下のコマンドで確認できます�
 
 1. 2つのターミナルウィンドウを開き、それぞれでポートフォワーディングを設定します：
 
-ターミナル1（マスターDB用）:
+ターミナル1（ターゲットDB用）:
 ```bash
-./run.sh port-forward-master --local-port 13306
+./run.sh port-forward-target --local-port 13306
 ```
 
-ターミナル2（セカンドDB用）:
+ターミナル2（ソースDB用）:
 ```bash
-./run.sh port-forward-second --local-port 13307
+./run.sh port-forward-source --local-port 13307
 ```
 
 2. 3つ目のターミナルウィンドウで、以下のコマンドを実行してサンプルデータベースをインポートします：
 
 ```bash
-./run.sh import-sample-db --master-port 13306 --second-port 13307
+./run.sh import-sample-db --target-port 13306 --source-port 13307
 ```
 
 このスクリプトは以下の処理を行います：
-- セカンドDBに以下のデータベースをインポート：
+- ソースDBに以下のデータベースをインポート：
   - `world` データベース（レプリケーション対象）
   - `worldnonrepl` データベース（レプリケーション非対象）
-- マスターDBに空の `world` データベースを作成（レプリケーションのターゲット）
+- ターゲットDBに空の `world` データベースを作成（レプリケーションのターゲット）
 
 ### ステップ4: DMSレプリケーションをデプロイ
 
@@ -138,7 +138,7 @@ IAMロールのデプロイ状況は以下のコマンドで確認できます�
 DMSレプリケーションのデプロイが完了したら、レプリケーションが正常に機能しているかを検証します。
 
 ```bash
-./run.sh verify-replication --master-port 13306 --second-port 13307
+./run.sh verify-replication --target-port 13306 --source-port 13307
 ```
 
 このスクリプトは以下の検証を行います：
@@ -175,7 +175,7 @@ DMSタスクを管理するには、以下のコマンドを使用します：
 
 このリポジトリには以下のヘルパースクリプトが含まれています：
 
-1. **scripts/import_sample_db.sh** - サンプルデータベース（World）をセカンドDBにインポートし、マスターDBに空のWorldデータベースを作成
+1. **scripts/import_sample_db.sh** - サンプルデータベース（World）をソースDBにインポートし、ターゲットDBに空のWorldデータベースを作成
 2. **scripts/verify_replication.sh** - レプリケーションが正常に機能しているかを検証
 3. **scripts/manage_dms_task.sh** - DMSタスクの管理（開始、停止、ステータス確認、再起動）
 
@@ -183,7 +183,7 @@ DMSタスクを管理するには、以下のコマンドを使用します：
 
 ## 注意事項
 
-1. **バイナリログの有効化**: レプリケーションを機能させるためには、セカンドDBでバイナリログが有効になっている必要があります。既存のテンプレートではこれが設定されていることを前提としています。
+1. **バイナリログの有効化**: レプリケーションを機能させるためには、ソースDBでバイナリログが有効になっている必要があります。既存のテンプレートではこれが設定されていることを前提としています。
 
 2. **データベースユーザー権限**: レプリケーションに使用するデータベースユーザーには、適切な権限（REPLICATION CLIENT, REPLICATION SLAVE）が必要です。
 

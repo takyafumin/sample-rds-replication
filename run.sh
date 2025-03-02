@@ -13,7 +13,7 @@ TEMPLATE_FILE="templates/rds-replication.yaml"
 DMS_STACK_NAME="dms-replication"
 DMS_TEMPLATE_FILE="templates/dms-replication.yaml"
 IAM_STACK_NAME="dms-iam-roles"
-IAM_TEMPLATE_FILE="iam-setup/dms-iam-roles.yaml"
+IAM_TEMPLATE_FILE="templates/dms-iam-roles.yaml"
 REGION=$(aws configure get region)
 if [ -z "$REGION" ]; then
     REGION="ap-northeast-1" # デフォルトリージョン
@@ -32,8 +32,8 @@ function show_help {
     echo -e "  ${GREEN}status${NC}              - スタックのステータスを表示します"
     echo -e "  ${GREEN}outputs${NC}             - スタックの出力値を表示します"
     echo -e "  ${GREEN}connect-ec2${NC}         - 踏み台EC2インスタンスにSSM接続します"
-    echo -e "  ${GREEN}port-forward-master${NC} - マスターDBへのポートフォワーディングを設定します"
-    echo -e "  ${GREEN}port-forward-second${NC} - セカンドDBへのポートフォワーディングを設定します"
+    echo -e "  ${GREEN}port-forward-target${NC} - ターゲットDBへのポートフォワーディングを設定します"
+    echo -e "  ${GREEN}port-forward-source${NC} - ソースDBへのポートフォワーディングを設定します"
     echo -e "  ${GREEN}prepare-sample-data${NC} - サンプルデータファイルを準備します"
     echo -e "  ${GREEN}import-sample-db${NC}    - ローカルからサンプルデータベースをインポートします"
     echo -e "  ${GREEN}verify-replication${NC}  - レプリケーションの検証を行います"
@@ -52,11 +52,11 @@ function show_help {
     echo -e "  $0 ${GREEN}deploy${NC} --db-password MySecurePassword123"
     echo -e "  $0 ${GREEN}connect-ec2${NC}"
     echo -e "  $0 ${GREEN}prepare-sample-data${NC}"
-    echo -e "  $0 ${GREEN}port-forward-master${NC} --local-port 13306"
-    echo -e "  $0 ${GREEN}port-forward-second${NC} --local-port 13307"
-    echo -e "  $0 ${GREEN}import-sample-db${NC} --master-port 13306 --second-port 13307"
-    echo -e "  $0 ${GREEN}verify-replication${NC} --master-port 13306 --second-port 13307"
-    echo -e "  $0 ${GREEN}deploy-dms${NC} --db-password MySecurePassword123 --source-db world"
+    echo -e "  $0 ${GREEN}port-forward-target${NC} --local-port 13306"
+    echo -e "  $0 ${GREEN}port-forward-source${NC} --local-port 13307"
+    echo -e "  $0 ${GREEN}import-sample-db${NC} --target-port 13306 --source-port 13307"
+    echo -e "  $0 ${GREEN}verify-replication${NC} --target-port 13306 --source-port 13307"
+    echo -e "  $0 ${GREEN}deploy-dms${NC} --db-password MySecurePassword123 --source-db mydb"
     echo -e "  $0 ${GREEN}delete-dms${NC}"
     echo -e "  $0 ${GREEN}deploy-iam${NC}"
     echo -e "  $0 ${GREEN}delete-iam${NC}"
@@ -166,9 +166,9 @@ function prepare_sample_data {
     if [ -f "$SAMPLE_DIR/world.sql" ] && [ -f "$SAMPLE_DIR/employees.sql" ]; then
         echo -e "${GREEN}サンプルデータファイルの準備が完了しました${NC}"
         echo -e "${BLUE}次のステップ:${NC}"
-        echo -e "1. ${YELLOW}./run.sh port-forward-master --local-port 13306${NC} (別ターミナルで実行)"
-        echo -e "2. ${YELLOW}./run.sh port-forward-second --local-port 13307${NC} (別ターミナルで実行)"
-        echo -e "3. ${YELLOW}./run.sh import-sample-db --master-port 13306 --second-port 13307${NC}"
+        echo -e "1. ${YELLOW}./run.sh port-forward-target --local-port 13306${NC} (別ターミナルで実行)"
+        echo -e "2. ${YELLOW}./run.sh port-forward-source --local-port 13307${NC} (別ターミナルで実行)"
+        echo -e "3. ${YELLOW}./run.sh import-sample-db --target-port 13306 --source-port 13307${NC}"
     else
         echo -e "${RED}サンプルデータファイルの準備に失敗しました${NC}"
         echo -e "${YELLOW}必要なファイルを手動で $SAMPLE_DIR ディレクトリに配置してください:${NC}"
@@ -179,18 +179,18 @@ function prepare_sample_data {
 
 # ローカルからサンプルデータベースをインポート
 function import_sample_db_local {
-    local master_port=13306
-    local second_port=13307
+    local target_port=13306
+    local source_port=13307
 
     # パラメータの解析
     while [[ $# -gt 0 ]]; do
         case $1 in
-            --master-port)
-                master_port="$2"
+            --target-port)
+                target_port="$2"
                 shift 2
                 ;;
-            --second-port)
-                second_port="$2"
+            --source-port)
+                source_port="$2"
                 shift 2
                 ;;
             *)
@@ -217,57 +217,164 @@ function import_sample_db_local {
 
     echo -e "${BLUE}ローカルからサンプルデータベースをインポートします...${NC}"
     echo -e "${YELLOW}注意: このコマンドを実行する前に、別のターミナルで以下のコマンドを実行してポートフォワーディングを設定してください:${NC}"
-    echo -e "  $0 port-forward-master --local-port $master_port"
-    echo -e "  $0 port-forward-second --local-port $second_port"
+    echo -e "  $0 port-forward-target --local-port $target_port"
+    echo -e "  $0 port-forward-source --local-port $source_port"
     echo ""
 
     # ポートフォワーディングの確認
     echo -e "${BLUE}ポートフォワーディングの接続確認を行います...${NC}"
-    local master_check=false
-    local second_check=false
+    local target_check=false
+    local source_check=false
 
-    # マスターDBへの接続確認
-    if nc -z localhost $master_port 2>/dev/null; then
-        echo -e "${GREEN}マスターDBへのポートフォワーディング (localhost:$master_port) が正常に機能しています${NC}"
-        master_check=true
+    # ターゲットDBへの接続確認
+    if nc -z localhost $target_port 2>/dev/null; then
+        echo -e "${GREEN}ターゲットDBへのポートフォワーディング (localhost:$target_port) が正常に機能しています${NC}"
+        target_check=true
     else
-        echo -e "${RED}マスターDBへのポートフォワーディングが機能していません${NC}"
+        echo -e "${RED}ターゲットDBへのポートフォワーディングが機能していません${NC}"
         echo -e "${YELLOW}別のターミナルで以下のコマンドを実行してください:${NC}"
-        echo -e "  $0 port-forward-master --local-port $master_port"
+        echo -e "  $0 port-forward-target --local-port $target_port"
     fi
 
-    # セカンドDBへの接続確認
-    if nc -z localhost $second_port 2>/dev/null; then
-        echo -e "${GREEN}セカンドDBへのポートフォワーディング (localhost:$second_port) が正常に機能しています${NC}"
-        second_check=true
+    # ソースDBへの接続確認
+    if nc -z localhost $source_port 2>/dev/null; then
+        echo -e "${GREEN}ソースDBへのポートフォワーディング (localhost:$source_port) が正常に機能しています${NC}"
+        source_check=true
     else
-        echo -e "${RED}セカンドDBへのポートフォワーディングが機能していません${NC}"
+        echo -e "${RED}ソースDBへのポートフォワーディングが機能していません${NC}"
         echo -e "${YELLOW}別のターミナルで以下のコマンドを実行してください:${NC}"
-        echo -e "  $0 port-forward-second --local-port $second_port"
+        echo -e "  $0 port-forward-source --local-port $source_port"
     fi
 
     # 両方のポートフォワーディングが機能していない場合は終了
-    if [ "$master_check" = false ] || [ "$second_check" = false ]; then
+    if [ "$target_check" = false ] || [ "$source_check" = false ]; then
         echo -e "${RED}ポートフォワーディングの設定を確認してから再試行してください${NC}"
         return 1
     fi
 
-    # スクリプトを実行
-    echo -e "${BLUE}サンプルデータベースのインポートを開始します...${NC}"
-    ./scripts/import_sample_db.sh --local \
-        --second-endpoint "localhost:$second_port" \
-        --master-endpoint "localhost:$master_port"
+    # 認証情報の入力
+    read -p "データベースユーザー名: " DB_USERNAME
+    read -sp "データベースパスワード: " DB_PASSWORD
+    echo ""
 
-    if [ $? -eq 0 ]; then
-        echo -e "${GREEN}サンプルデータベースのインポートが完了しました${NC}"
-        echo -e "${BLUE}次のステップ:${NC}"
-        echo -e "1. ${YELLOW}./run.sh deploy-dms --db-password <パスワード> --source-db world${NC}"
-        echo -e "2. DMSレプリケーションが完了したら: ${YELLOW}./run.sh verify-replication --master-port $master_port --second-port $second_port${NC}"
-    else
-        echo -e "${RED}サンプルデータベースのインポートに失敗しました${NC}"
-        echo -e "${YELLOW}エラーの詳細を確認するには、スクリプトを直接実行してみてください:${NC}"
-        echo -e "  ./scripts/import_sample_db.sh --local --second-endpoint localhost:$second_port --master-endpoint localhost:$master_port"
+    echo -e "${BLUE}レプリケーション状態を検証中...${NC}"
+
+    # 1. レプリケーション対象データベース（mydb）の検証
+    echo -e "${BLUE}=== レプリケーション対象データベース (mydb) の検証 ===${NC}"
+
+    # ソースDBのテーブル数を取得
+    echo -e "${BLUE}ソースDB (ソース) のテーブル数を取得中...${NC}"
+    local SOURCE_DB_TABLES=$(mysql -h localhost -P $source_port -u $DB_USERNAME -p$DB_PASSWORD --protocol=TCP -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'mydb';" -s)
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}ソースDBへの接続に失敗しました${NC}"
         return 1
+    fi
+
+    # ターゲットDBのテーブル数を取得
+    echo -e "${BLUE}ターゲットDB (ターゲット) のテーブル数を取得中...${NC}"
+    local TARGET_DB_TABLES=$(mysql -h localhost -P $target_port -u $DB_USERNAME -p$DB_PASSWORD --protocol=TCP -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'mydb';" -s)
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}ターゲットDBへの接続に失敗しました${NC}"
+        return 1
+    fi
+
+    echo -e "${BLUE}ソースDB (ソース) のテーブル数: ${NC}$SOURCE_DB_TABLES"
+    echo -e "${BLUE}ターゲットDB (ターゲット) のテーブル数: ${NC}$TARGET_DB_TABLES"
+
+    if [ "$SOURCE_DB_TABLES" -eq "$TARGET_DB_TABLES" ]; then
+        echo -e "${GREEN}✅ テーブル数が一致しています。レプリケーションが正常に機能しています。${NC}"
+    else
+        echo -e "${RED}❌ テーブル数が一致していません。レプリケーションに問題がある可能性があります。${NC}"
+    fi
+
+    # 各テーブルの行数を比較
+    echo ""
+    echo -e "${BLUE}各テーブルの行数を比較中...${NC}"
+
+    # テーブル一覧を取得
+    local TABLES=$(mysql -h localhost -P $source_port -u $DB_USERNAME -p$DB_PASSWORD --protocol=TCP -e "SHOW TABLES FROM mydb;" -s)
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}テーブル一覧の取得に失敗しました${NC}"
+        return 1
+    fi
+
+    # 各テーブルの行数を比較
+    local all_match=true
+    for TABLE in $TABLES; do
+        local SOURCE_DB_ROWS=$(mysql -h localhost -P $source_port -u $DB_USERNAME -p$DB_PASSWORD --protocol=TCP -e "SELECT COUNT(*) FROM mydb.$TABLE;" -s)
+        local TARGET_DB_ROWS=$(mysql -h localhost -P $target_port -u $DB_USERNAME -p$DB_PASSWORD --protocol=TCP -e "SELECT COUNT(*) FROM mydb.$TABLE;" -s)
+
+        echo -e "${BLUE}テーブル: ${NC}$TABLE"
+        echo -e "  ${BLUE}ソースDB (ソース) の行数: ${NC}$SOURCE_DB_ROWS"
+        echo -e "  ${BLUE}ターゲットDB (ターゲット) の行数: ${NC}$TARGET_DB_ROWS"
+
+        if [ "$SOURCE_DB_ROWS" -eq "$TARGET_DB_ROWS" ]; then
+            echo -e "  ${GREEN}✅ 行数が一致しています。${NC}"
+        else
+            echo -e "  ${RED}❌ 行数が一致していません。${NC}"
+            all_match=false
+        fi
+        echo ""
+    done
+
+    # 2. レプリケーション非対象データベース（worldnonrepl）の検証
+    echo -e "${BLUE}=== レプリケーション非対象データベース (worldnonrepl) の検証 ===${NC}"
+
+    # ターゲットDBにworldnonreplデータベースが存在するか確認
+    local NONREPL_DB_EXISTS=$(mysql -h localhost -P $target_port -u $DB_USERNAME -p$DB_PASSWORD --protocol=TCP -e "SELECT COUNT(*) FROM information_schema.schemata WHERE schema_name = 'worldnonrepl';" -s)
+
+    if [ "$NONREPL_DB_EXISTS" -eq "0" ]; then
+        echo -e "${GREEN}✅ worldnonreplデータベースはターゲットDBに存在しません。レプリケーション対象外の設定が正常に機能しています。${NC}"
+    else
+        echo -e "${RED}❌ worldnonreplデータベースがターゲットDBに存在します。レプリケーション対象外の設定に問題がある可能性があります。${NC}"
+        all_match=false
+
+        # worldnonreplデータベースのテーブル数を確認
+        local NONREPL_TABLES=$(mysql -h localhost -P $target_port -u $DB_USERNAME -p$DB_PASSWORD --protocol=TCP -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'worldnonrepl';" -s)
+        echo -e "${BLUE}ターゲットDBのworldnonreplデータベースのテーブル数: ${NC}$NONREPL_TABLES"
+    fi
+
+    # 3. 継続的なレプリケーションをテスト
+    echo -e "${BLUE}=== 継続的なレプリケーションをテスト ===${NC}"
+    echo -e "${BLUE}ソースDB (ソース) に新しい行を挿入します...${NC}"
+
+    # 現在の時刻を使用してユニークな値を作成
+    local TIMESTAMP=$(date +%Y%m%d%H%M%S)
+    local CITY_NAME="TestCity$TIMESTAMP"
+
+    # ソースDBに新しい行を挿入
+    mysql -h localhost -P $source_port -u $DB_USERNAME -p$DB_PASSWORD --protocol=TCP -e "INSERT INTO mydb.city (Name, CountryCode, District, Population) VALUES ('$CITY_NAME', 'JPN', 'Test District', 12345);"
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}新しい行の挿入に失敗しました${NC}"
+        return 1
+    fi
+
+    # 少し待機してレプリケーションが行われるのを待つ
+    echo -e "${BLUE}レプリケーションが完了するまで10秒待機中...${NC}"
+    sleep 10
+
+    # ターゲットDBで挿入された行を確認
+    local TARGET_DB_CHECK=$(mysql -h localhost -P $target_port -u $DB_USERNAME -p$DB_PASSWORD --protocol=TCP -e "SELECT COUNT(*) FROM mydb.city WHERE Name = '$CITY_NAME';" -s)
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}ターゲットDBでの確認に失敗しました${NC}"
+        return 1
+    fi
+
+    if [ "$TARGET_DB_CHECK" -eq "1" ]; then
+        echo -e "${GREEN}✅ 継続的なレプリケーションが正常に機能しています。挿入された行がターゲットDBに複製されました。${NC}"
+    else
+        echo -e "${RED}❌ 継続的なレプリケーションに問題があります。挿入された行がターゲットDBに複製されていません。${NC}"
+        all_match=false
+    fi
+
+    echo ""
+    if [ "$all_match" = true ]; then
+        echo -e "${GREEN}レプリケーション検証が完了しました。すべてのテストに合格しました！${NC}"
+        echo -e "${GREEN}・mydb データベースは正常にレプリケーションされています${NC}"
+        echo -e "${GREEN}・worldnonrepl データベースはレプリケーションされていません（期待通り）${NC}"
+    else
+        echo -e "${YELLOW}レプリケーション検証が完了しましたが、一部のテストに失敗しました。${NC}"
+        echo -e "${YELLOW}DMSタスクのステータスを確認してください: ${NC}./run.sh status-dms"
     fi
 }
 
@@ -330,8 +437,8 @@ function deploy_stack {
         --parameters \
             ParameterKey=DBPassword,ParameterValue=$db_password \
             ParameterKey=DBUsername,ParameterValue=$db_username \
-            ParameterKey=MasterDBName,ParameterValue=$master_db_name \
-            ParameterKey=SecondDBName,ParameterValue=$second_db_name \
+            ParameterKey=TargetDBName,ParameterValue=$master_db_name \
+            ParameterKey=SourceDBName,ParameterValue=$second_db_name \
             ParameterKey=DBInstanceClass,ParameterValue=$db_instance_class \
             ParameterKey=EC2InstanceType,ParameterValue=$ec2_instance_type \
         --capabilities CAPABILITY_IAM
@@ -453,19 +560,19 @@ function update_stack {
     fi
 
     if [ "$use_previous_master_db_name" = true ]; then
-        parameters="$parameters ParameterKey=MasterDBName,UsePreviousValue=true"
+        parameters="$parameters ParameterKey=TargetDBName,UsePreviousValue=true"
     elif [ -n "$master_db_name" ]; then
-        parameters="$parameters ParameterKey=MasterDBName,ParameterValue=$master_db_name"
+        parameters="$parameters ParameterKey=TargetDBName,ParameterValue=$master_db_name"
     else
-        parameters="$parameters ParameterKey=MasterDBName,UsePreviousValue=true"
+        parameters="$parameters ParameterKey=TargetDBName,UsePreviousValue=true"
     fi
 
     if [ "$use_previous_second_db_name" = true ]; then
-        parameters="$parameters ParameterKey=SecondDBName,UsePreviousValue=true"
+        parameters="$parameters ParameterKey=SourceDBName,UsePreviousValue=true"
     elif [ -n "$second_db_name" ]; then
-        parameters="$parameters ParameterKey=SecondDBName,ParameterValue=$second_db_name"
+        parameters="$parameters ParameterKey=SourceDBName,ParameterValue=$second_db_name"
     else
-        parameters="$parameters ParameterKey=SecondDBName,UsePreviousValue=true"
+        parameters="$parameters ParameterKey=SourceDBName,UsePreviousValue=true"
     fi
 
     if [ "$use_previous_db_instance_class" = true ]; then
@@ -592,8 +699,8 @@ function connect_to_ec2 {
     aws ssm start-session --target $instance_id --region $REGION
 }
 
-# マスターDBへのポートフォワーディングを設定
-function port_forward_master {
+# ターゲットDBへのポートフォワーディングを設定
+function port_forward_target {
     local local_port=3306
 
     # パラメータの解析
@@ -616,7 +723,7 @@ function port_forward_master {
         return 1
     fi
 
-    echo -e "${BLUE}マスターDBへのポートフォワーディングを設定しています...${NC}"
+    echo -e "${BLUE}ターゲットDBへのポートフォワーディングを設定しています...${NC}"
 
     local instance_id=$(get_stack_output "BastionInstanceId")
     local db_endpoint=$(get_stack_output "MasterDBEndpoint")
@@ -638,8 +745,8 @@ function port_forward_master {
         --region $REGION
 }
 
-# セカンドDBへのポートフォワーディングを設定
-function port_forward_second {
+# ソースDBへのポートフォワーディングを設定
+function port_forward_source {
     local local_port=3307
 
     # パラメータの解析
@@ -662,7 +769,7 @@ function port_forward_second {
         return 1
     fi
 
-    echo -e "${BLUE}セカンドDBへのポートフォワーディングを設定しています...${NC}"
+    echo -e "${BLUE}ソースDBへのポートフォワーディングを設定しています...${NC}"
 
     local instance_id=$(get_stack_output "BastionInstanceId")
     local db_endpoint=$(get_stack_output "SecondDBEndpoint")
@@ -688,7 +795,7 @@ function port_forward_second {
 function deploy_dms_stack {
     local db_password=""
     local db_username="admin"
-    local source_db_name="world"
+    local source_db_name="mydb"
 
     # オプションの解析
     while [[ $# -gt 0 ]]; do
@@ -744,7 +851,7 @@ function deploy_dms_stack {
         echo -e "${GREEN}DMSレプリケーションスタックのデプロイが完了しました${NC}"
         echo -e "${BLUE}次のステップ:${NC}"
         echo -e "1. ${YELLOW}./run.sh status-dms${NC} でDMSタスクのステータスを確認"
-        echo -e "2. レプリケーションが完了したら: ${YELLOW}./run.sh verify-replication --master-port 13306 --second-port 13307${NC}"
+        echo -e "2. レプリケーションが完了したら: ${YELLOW}./run.sh verify-replication --target-port 13306 --source-port 13307${NC}"
     else
         echo -e "${RED}DMSレプリケーションスタックのデプロイに失敗しました${NC}"
     fi
@@ -822,18 +929,18 @@ function manage_dms_task {
 
 # ローカルからレプリケーションを検証
 function verify_replication_local {
-    local master_port=13306
-    local second_port=13307
+    local target_port=13306
+    local source_port=13307
 
     # パラメータの解析
     while [[ $# -gt 0 ]]; do
         case $1 in
-            --master-port)
-                master_port="$2"
+            --target-port)
+                target_port="$2"
                 shift 2
                 ;;
-            --second-port)
-                second_port="$2"
+            --source-port)
+                source_port="$2"
                 shift 2
                 ;;
             *)
@@ -853,37 +960,37 @@ function verify_replication_local {
     if ! aws cloudformation describe-stacks --stack-name $DMS_STACK_NAME &>/dev/null; then
         echo -e "${RED}エラー: DMSスタック '$DMS_STACK_NAME' が存在しません${NC}"
         echo -e "${YELLOW}先に以下のコマンドを実行してDMSレプリケーションをデプロイしてください:${NC}"
-        echo -e "  $0 deploy-dms --db-password <パスワード> --source-db world"
+        echo -e "  $0 deploy-dms --db-password <パスワード> --source-db mydb"
         return 1
     fi
 
     # ポートフォワーディングの確認
     echo -e "${BLUE}ポートフォワーディングの接続確認を行います...${NC}"
-    local master_check=false
-    local second_check=false
+    local target_check=false
+    local source_check=false
 
-    # マスターDBへの接続確認
-    if nc -z localhost $master_port 2>/dev/null; then
-        echo -e "${GREEN}マスターDBへのポートフォワーディング (localhost:$master_port) が正常に機能しています${NC}"
-        master_check=true
+    # ターゲットDBへの接続確認
+    if nc -z localhost $target_port 2>/dev/null; then
+        echo -e "${GREEN}ターゲットDBへのポートフォワーディング (localhost:$target_port) が正常に機能しています${NC}"
+        target_check=true
     else
-        echo -e "${RED}マスターDBへのポートフォワーディングが機能していません${NC}"
+        echo -e "${RED}ターゲットDBへのポートフォワーディングが機能していません${NC}"
         echo -e "${YELLOW}別のターミナルで以下のコマンドを実行してください:${NC}"
-        echo -e "  $0 port-forward-master --local-port $master_port"
+        echo -e "  $0 port-forward-target --local-port $target_port"
     fi
 
-    # セカンドDBへの接続確認
-    if nc -z localhost $second_port 2>/dev/null; then
-        echo -e "${GREEN}セカンドDBへのポートフォワーディング (localhost:$second_port) が正常に機能しています${NC}"
-        second_check=true
+    # ソースDBへの接続確認
+    if nc -z localhost $source_port 2>/dev/null; then
+        echo -e "${GREEN}ソースDBへのポートフォワーディング (localhost:$source_port) が正常に機能しています${NC}"
+        source_check=true
     else
-        echo -e "${RED}セカンドDBへのポートフォワーディングが機能していません${NC}"
+        echo -e "${RED}ソースDBへのポートフォワーディングが機能していません${NC}"
         echo -e "${YELLOW}別のターミナルで以下のコマンドを実行してください:${NC}"
-        echo -e "  $0 port-forward-second --local-port $second_port"
+        echo -e "  $0 port-forward-source --local-port $source_port"
     fi
 
     # 両方のポートフォワーディングが機能していない場合は終了
-    if [ "$master_check" = false ] || [ "$second_check" = false ]; then
+    if [ "$target_check" = false ] || [ "$source_check" = false ]; then
         echo -e "${RED}ポートフォワーディングの設定を確認してから再試行してください${NC}"
         return 1
     fi
@@ -895,29 +1002,29 @@ function verify_replication_local {
 
     echo -e "${BLUE}レプリケーション状態を検証中...${NC}"
 
-    # 1. レプリケーション対象データベース（world）の検証
-    echo -e "${BLUE}=== レプリケーション対象データベース (world) の検証 ===${NC}"
+    # 1. レプリケーション対象データベース（mydb）の検証
+    echo -e "${BLUE}=== レプリケーション対象データベース (mydb) の検証 ===${NC}"
 
-    # セカンドDBのテーブル数を取得
-    echo -e "${BLUE}セカンドDB (ソース) のテーブル数を取得中...${NC}"
-    local SECOND_DB_TABLES=$(mysql -h localhost -P $second_port -u $DB_USERNAME -p$DB_PASSWORD --protocol=TCP -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'world';" -s)
+    # ソースDBのテーブル数を取得
+    echo -e "${BLUE}ソースDB (ソース) のテーブル数を取得中...${NC}"
+    local SOURCE_DB_TABLES=$(mysql -h localhost -P $source_port -u $DB_USERNAME -p$DB_PASSWORD --protocol=TCP -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'mydb';" -s)
     if [ $? -ne 0 ]; then
-        echo -e "${RED}セカンドDBへの接続に失敗しました${NC}"
+        echo -e "${RED}ソースDBへの接続に失敗しました${NC}"
         return 1
     fi
 
-    # マスターDBのテーブル数を取得
-    echo -e "${BLUE}マスターDB (ターゲット) のテーブル数を取得中...${NC}"
-    local MASTER_DB_TABLES=$(mysql -h localhost -P $master_port -u $DB_USERNAME -p$DB_PASSWORD --protocol=TCP -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'world';" -s)
+    # ターゲットDBのテーブル数を取得
+    echo -e "${BLUE}ターゲットDB (ターゲット) のテーブル数を取得中...${NC}"
+    local TARGET_DB_TABLES=$(mysql -h localhost -P $target_port -u $DB_USERNAME -p$DB_PASSWORD --protocol=TCP -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'mydb';" -s)
     if [ $? -ne 0 ]; then
-        echo -e "${RED}マスターDBへの接続に失敗しました${NC}"
+        echo -e "${RED}ターゲットDBへの接続に失敗しました${NC}"
         return 1
     fi
 
-    echo -e "${BLUE}セカンドDB (ソース) のテーブル数: ${NC}$SECOND_DB_TABLES"
-    echo -e "${BLUE}マスターDB (ターゲット) のテーブル数: ${NC}$MASTER_DB_TABLES"
+    echo -e "${BLUE}ソースDB (ソース) のテーブル数: ${NC}$SOURCE_DB_TABLES"
+    echo -e "${BLUE}ターゲットDB (ターゲット) のテーブル数: ${NC}$TARGET_DB_TABLES"
 
-    if [ "$SECOND_DB_TABLES" -eq "$MASTER_DB_TABLES" ]; then
+    if [ "$SOURCE_DB_TABLES" -eq "$TARGET_DB_TABLES" ]; then
         echo -e "${GREEN}✅ テーブル数が一致しています。レプリケーションが正常に機能しています。${NC}"
     else
         echo -e "${RED}❌ テーブル数が一致していません。レプリケーションに問題がある可能性があります。${NC}"
@@ -928,7 +1035,7 @@ function verify_replication_local {
     echo -e "${BLUE}各テーブルの行数を比較中...${NC}"
 
     # テーブル一覧を取得
-    local TABLES=$(mysql -h localhost -P $second_port -u $DB_USERNAME -p$DB_PASSWORD --protocol=TCP -e "SHOW TABLES FROM world;" -s)
+    local TABLES=$(mysql -h localhost -P $source_port -u $DB_USERNAME -p$DB_PASSWORD --protocol=TCP -e "SHOW TABLES FROM mydb;" -s)
     if [ $? -ne 0 ]; then
         echo -e "${RED}テーブル一覧の取得に失敗しました${NC}"
         return 1
@@ -937,14 +1044,14 @@ function verify_replication_local {
     # 各テーブルの行数を比較
     local all_match=true
     for TABLE in $TABLES; do
-        local SECOND_DB_ROWS=$(mysql -h localhost -P $second_port -u $DB_USERNAME -p$DB_PASSWORD --protocol=TCP -e "SELECT COUNT(*) FROM world.$TABLE;" -s)
-        local MASTER_DB_ROWS=$(mysql -h localhost -P $master_port -u $DB_USERNAME -p$DB_PASSWORD --protocol=TCP -e "SELECT COUNT(*) FROM world.$TABLE;" -s)
+        local SOURCE_DB_ROWS=$(mysql -h localhost -P $source_port -u $DB_USERNAME -p$DB_PASSWORD --protocol=TCP -e "SELECT COUNT(*) FROM mydb.$TABLE;" -s)
+        local TARGET_DB_ROWS=$(mysql -h localhost -P $target_port -u $DB_USERNAME -p$DB_PASSWORD --protocol=TCP -e "SELECT COUNT(*) FROM mydb.$TABLE;" -s)
 
         echo -e "${BLUE}テーブル: ${NC}$TABLE"
-        echo -e "  ${BLUE}セカンドDB (ソース) の行数: ${NC}$SECOND_DB_ROWS"
-        echo -e "  ${BLUE}マスターDB (ターゲット) の行数: ${NC}$MASTER_DB_ROWS"
+        echo -e "  ${BLUE}ソースDB (ソース) の行数: ${NC}$SOURCE_DB_ROWS"
+        echo -e "  ${BLUE}ターゲットDB (ターゲット) の行数: ${NC}$TARGET_DB_ROWS"
 
-        if [ "$SECOND_DB_ROWS" -eq "$MASTER_DB_ROWS" ]; then
+        if [ "$SOURCE_DB_ROWS" -eq "$TARGET_DB_ROWS" ]; then
             echo -e "  ${GREEN}✅ 行数が一致しています。${NC}"
         else
             echo -e "  ${RED}❌ 行数が一致していません。${NC}"
@@ -956,30 +1063,30 @@ function verify_replication_local {
     # 2. レプリケーション非対象データベース（worldnonrepl）の検証
     echo -e "${BLUE}=== レプリケーション非対象データベース (worldnonrepl) の検証 ===${NC}"
 
-    # マスターDBにworldnonreplデータベースが存在するか確認
-    local NONREPL_DB_EXISTS=$(mysql -h localhost -P $master_port -u $DB_USERNAME -p$DB_PASSWORD --protocol=TCP -e "SELECT COUNT(*) FROM information_schema.schemata WHERE schema_name = 'worldnonrepl';" -s)
+    # ターゲットDBにworldnonreplデータベースが存在するか確認
+    local NONREPL_DB_EXISTS=$(mysql -h localhost -P $target_port -u $DB_USERNAME -p$DB_PASSWORD --protocol=TCP -e "SELECT COUNT(*) FROM information_schema.schemata WHERE schema_name = 'worldnonrepl';" -s)
 
     if [ "$NONREPL_DB_EXISTS" -eq "0" ]; then
-        echo -e "${GREEN}✅ worldnonreplデータベースはマスターDBに存在しません。レプリケーション対象外の設定が正常に機能しています。${NC}"
+        echo -e "${GREEN}✅ worldnonreplデータベースはターゲットDBに存在しません。レプリケーション対象外の設定が正常に機能しています。${NC}"
     else
-        echo -e "${RED}❌ worldnonreplデータベースがマスターDBに存在します。レプリケーション対象外の設定に問題がある可能性があります。${NC}"
+        echo -e "${RED}❌ worldnonreplデータベースがターゲットDBに存在します。レプリケーション対象外の設定に問題がある可能性があります。${NC}"
         all_match=false
 
         # worldnonreplデータベースのテーブル数を確認
-        local NONREPL_TABLES=$(mysql -h localhost -P $master_port -u $DB_USERNAME -p$DB_PASSWORD --protocol=TCP -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'worldnonrepl';" -s)
-        echo -e "${BLUE}マスターDBのworldnonreplデータベースのテーブル数: ${NC}$NONREPL_TABLES"
+        local NONREPL_TABLES=$(mysql -h localhost -P $target_port -u $DB_USERNAME -p$DB_PASSWORD --protocol=TCP -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'worldnonrepl';" -s)
+        echo -e "${BLUE}ターゲットDBのworldnonreplデータベースのテーブル数: ${NC}$NONREPL_TABLES"
     fi
 
     # 3. 継続的なレプリケーションをテスト
     echo -e "${BLUE}=== 継続的なレプリケーションをテスト ===${NC}"
-    echo -e "${BLUE}セカンドDB (ソース) に新しい行を挿入します...${NC}"
+    echo -e "${BLUE}ソースDB (ソース) に新しい行を挿入します...${NC}"
 
     # 現在の時刻を使用してユニークな値を作成
     local TIMESTAMP=$(date +%Y%m%d%H%M%S)
     local CITY_NAME="TestCity$TIMESTAMP"
 
-    # セカンドDBに新しい行を挿入
-    mysql -h localhost -P $second_port -u $DB_USERNAME -p$DB_PASSWORD --protocol=TCP -e "INSERT INTO world.city (Name, CountryCode, District, Population) VALUES ('$CITY_NAME', 'JPN', 'Test District', 12345);"
+    # ソースDBに新しい行を挿入
+    mysql -h localhost -P $source_port -u $DB_USERNAME -p$DB_PASSWORD --protocol=TCP -e "INSERT INTO mydb.city (Name, CountryCode, District, Population) VALUES ('$CITY_NAME', 'JPN', 'Test District', 12345);"
     if [ $? -ne 0 ]; then
         echo -e "${RED}新しい行の挿入に失敗しました${NC}"
         return 1
@@ -989,24 +1096,24 @@ function verify_replication_local {
     echo -e "${BLUE}レプリケーションが完了するまで10秒待機中...${NC}"
     sleep 10
 
-    # マスターDBで挿入された行を確認
-    local MASTER_DB_CHECK=$(mysql -h localhost -P $master_port -u $DB_USERNAME -p$DB_PASSWORD --protocol=TCP -e "SELECT COUNT(*) FROM world.city WHERE Name = '$CITY_NAME';" -s)
+    # ターゲットDBで挿入された行を確認
+    local TARGET_DB_CHECK=$(mysql -h localhost -P $target_port -u $DB_USERNAME -p$DB_PASSWORD --protocol=TCP -e "SELECT COUNT(*) FROM mydb.city WHERE Name = '$CITY_NAME';" -s)
     if [ $? -ne 0 ]; then
-        echo -e "${RED}マスターDBでの確認に失敗しました${NC}"
+        echo -e "${RED}ターゲットDBでの確認に失敗しました${NC}"
         return 1
     fi
 
-    if [ "$MASTER_DB_CHECK" -eq "1" ]; then
-        echo -e "${GREEN}✅ 継続的なレプリケーションが正常に機能しています。挿入された行がマスターDBに複製されました。${NC}"
+    if [ "$TARGET_DB_CHECK" -eq "1" ]; then
+        echo -e "${GREEN}✅ 継続的なレプリケーションが正常に機能しています。挿入された行がターゲットDBに複製されました。${NC}"
     else
-        echo -e "${RED}❌ 継続的なレプリケーションに問題があります。挿入された行がマスターDBに複製されていません。${NC}"
+        echo -e "${RED}❌ 継続的なレプリケーションに問題があります。挿入された行がターゲットDBに複製されていません。${NC}"
         all_match=false
     fi
 
     echo ""
     if [ "$all_match" = true ]; then
         echo -e "${GREEN}レプリケーション検証が完了しました。すべてのテストに合格しました！${NC}"
-        echo -e "${GREEN}・world データベースは正常にレプリケーションされています${NC}"
+        echo -e "${GREEN}・mydb データベースは正常にレプリケーションされています${NC}"
         echo -e "${GREEN}・worldnonrepl データベースはレプリケーションされていません（期待通り）${NC}"
     else
         echo -e "${YELLOW}レプリケーション検証が完了しましたが、一部のテストに失敗しました。${NC}"
@@ -1057,7 +1164,7 @@ function deploy_iam_stack {
         echo -e "${BLUE}DMS CloudWatch Logs ロールARN:${NC} $logs_role_arn"
 
         echo -e "${BLUE}次のステップ:${NC}"
-        echo -e "1. ${YELLOW}./run.sh deploy-dms --db-password <パスワード> --source-db world${NC} でDMSレプリケーションをデプロイ"
+        echo -e "1. ${YELLOW}./run.sh deploy-dms --db-password <パスワード> --source-db mydb${NC} でDMSレプリケーションをデプロイ"
 
         return 0
     fi
@@ -1085,7 +1192,7 @@ function deploy_iam_stack {
     if [ $result -eq 0 ]; then
         echo -e "${GREEN}DMSに必要なIAMロールのデプロイが完了しました${NC}"
         echo -e "${BLUE}次のステップ:${NC}"
-        echo -e "1. ${YELLOW}./run.sh deploy-dms --db-password <パスワード> --source-db world${NC} でDMSレプリケーションをデプロイ"
+        echo -e "1. ${YELLOW}./run.sh deploy-dms --db-password <パスワード> --source-db mydb${NC} でDMSレプリケーションをデプロイ"
     else
         echo -e "${RED}DMSに必要なIAMロールのデプロイに失敗しました${NC}"
         echo -e "${YELLOW}既存のIAMロールが原因の場合は、以下のコマンドで確認できます:${NC}"
@@ -1137,7 +1244,7 @@ function show_iam_status {
             echo -e "${BLUE}DMS VPC ロールARN:${NC} $vpc_role_arn"
             echo -e "${BLUE}DMS CloudWatch Logs ロールARN:${NC} $logs_role_arn"
         else
-            echo -e "${YELLOW}必要なIAMロールも存在しません。${YELLOW}./run.sh deploy-iam${NC} を実行してデプロイしてください${NC}"
+            echo -e "${RED}必要なIAMロールも存在しません。${RED}./run.sh deploy-iam${NC} を実行してデプロイしてください${NC}"
         fi
 
         return 0
@@ -1194,7 +1301,7 @@ fi
 command=$1
 shift
 
-case $command in
+case "$command" in
     deploy)
         deploy_stack "$@"
         ;;
@@ -1213,11 +1320,11 @@ case $command in
     connect-ec2)
         connect_to_ec2
         ;;
-    port-forward-master)
-        port_forward_master "$@"
+    port-forward-target)
+        port_forward_target "$@"
         ;;
-    port-forward-second)
-        port_forward_second "$@"
+    port-forward-source)
+        port_forward_source "$@"
         ;;
     prepare-sample-data)
         prepare_sample_data
@@ -1259,7 +1366,7 @@ case $command in
         show_help
         ;;
     *)
-        echo -e "${RED}エラー: 不明なコマンド: $command${NC}"
+        echo -e "${RED}エラー: 不明なコマンド '$command'${NC}"
         show_help
         exit 1
         ;;

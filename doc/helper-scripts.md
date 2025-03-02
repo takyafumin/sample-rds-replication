@@ -19,7 +19,7 @@
 
 ## 2. import_sample_db.sh
 
-サンプルデータベース（World）をセカンドDBにインポートするスクリプトです。また、マスターDBに空のWorldデータベースを作成します。
+サンプルデータベース（World）をソースDBにインポートするスクリプトです。また、ターゲットDBに空のWorldデータベースを作成します。
 
 ### 使用方法
 
@@ -30,32 +30,32 @@
 または、ローカルモードで実行する場合：
 
 ```bash
-./import_sample_db.sh --local --second-endpoint <セカンドDBエンドポイント> --master-endpoint <マスターDBエンドポイント>
+./import_sample_db.sh --local --source-endpoint <ソースDBエンドポイント> --target-endpoint <ターゲットDBエンドポイント>
 ```
 
 ### 引数
 
 - `<スタック名>` - Aurora MySQL環境のCloudFormationスタック名
 - `--local` - ローカルモードで実行する場合に指定
-- `--second-endpoint` - セカンドDBのエンドポイント（ローカルモード時に必須）
-- `--master-endpoint` - マスターDBのエンドポイント（ローカルモード時に必須）
+- `--source-endpoint` - ソースDBのエンドポイント（ローカルモード時に必須）
+- `--target-endpoint` - ターゲットDBのエンドポイント（ローカルモード時に必須）
 
 ### 機能
 
 - CloudFormationスタックからDB接続情報を取得（ローカルモードでない場合）
-- セカンドDBに以下のデータベースをインポート：
+- ソースDBに以下のデータベースをインポート：
   - `world` データベース（レプリケーション対象）
   - `worldnonrepl` データベース（レプリケーション非対象）
-- マスターDBに空の `world` データベースを作成（レプリケーションのターゲット）
+- ターゲットDBに空の `world` データベースを作成（レプリケーションのターゲット）
 
 ### 処理の流れ
 
 1. CloudFormationスタックからDBエンドポイント情報を取得（ローカルモードでない場合）
 2. ユーザーにデータベース認証情報の入力を求める
 3. サンプルデータディレクトリの確認
-4. セカンドDBに `world` データベースをインポート（レプリケーション対象）
-5. セカンドDBに `worldnonrepl` データベースをインポート（レプリケーション非対象）
-6. マスターDBに空の `world` データベースを作成
+4. ソースDBに `world` データベースをインポート（レプリケーション対象）
+5. ソースDBに `worldnonrepl` データベースをインポート（レプリケーション非対象）
+6. ターゲットDBに空の `world` データベースを作成
 
 ## 3. verify_replication.sh
 
@@ -70,14 +70,14 @@ DMSレプリケーションが正常に機能しているかを検証するス�
 または、ローカルモードで実行する場合：
 
 ```bash
-./verify_replication_local.sh --master-port <マスターDBポート> --second-port <セカンドDBポート>
+./verify_replication_local.sh --target-port <ターゲットDBポート> --source-port <ソースDBポート>
 ```
 
 ### 引数
 
 - `<スタック名>` - Aurora MySQL環境のCloudFormationスタック名
-- `--master-port` - マスターDBのローカルポート（ローカルモード時に指定）
-- `--second-port` - セカンドDBのローカルポート（ローカルモード時に指定）
+- `--target-port` - ターゲットDBのローカルポート（ローカルモード時に指定）
+- `--source-port` - ソースDBのローカルポート（ローカルモード時に指定）
 
 ### 機能
 
@@ -92,7 +92,7 @@ DMSレプリケーションが正常に機能しているかを検証するス�
    - 各テーブルの行数の一致確認
 
 2. レプリケーション非対象データベース（worldnonrepl）の検証
-   - マスターDBに存在しないことを確認
+   - ターゲットDBに存在しないことを確認
 
 3. 継続的なレプリケーションのテスト
    - 新規データの挿入と複製確認

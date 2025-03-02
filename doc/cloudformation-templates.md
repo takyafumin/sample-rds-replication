@@ -11,16 +11,16 @@
 - **VPC** - プライベートネットワーク環境
 - **サブネット** - パブリックサブネット2つとプライベートサブネット2つ
 - **Aurora MySQLクラスター** - 2つのデータベースクラスター
-  - マスターDB: `hogedb`（デフォルト、変更可能）
-  - セカンドDB: `fugadb`（デフォルト、変更可能）
+  - ターゲットDB: `hogedb`（デフォルト、変更可能）
+  - ソースDB: `fugadb`（デフォルト、変更可能）
 - **踏み台EC2インスタンス** - SSM接続可能なEC2インスタンス
 
 ### パラメータ
 
 | パラメータ名 | 説明 | デフォルト値 |
 |------------|------|------------|
-| MasterDBName | マスターデータベース名 | hogedb |
-| SecondDBName | セカンドデータベース名 | fugadb |
+| TargetDBName | ターゲットデータベース名 | hogedb |
+| SourceDBName | ソースデータベース名 | fugadb |
 | DBInstanceClass | DBインスタンスクラス | db.t3.medium |
 | DBUsername | データベース管理者ユーザー名 | admin |
 | DBPassword | データベース管理者パスワード | - |
@@ -32,16 +32,16 @@
 
 | 出力名 | 説明 |
 |--------|------|
-| MasterDBEndpoint | マスターDBのエンドポイント |
-| MasterDBReadEndpoint | マスターDBのリードエンドポイント |
-| SecondDBEndpoint | セカンドDBのエンドポイント |
-| SecondDBReadEndpoint | セカンドDBのリードエンドポイント |
+| TargetDBEndpoint | ターゲットDBのエンドポイント |
+| TargetDBReadEndpoint | ターゲットDBのリードエンドポイント |
+| SourceDBEndpoint | ソースDBのエンドポイント |
+| SourceDBReadEndpoint | ソースDBのリードエンドポイント |
 | BastionInstanceId | 踏み台サーバーのインスタンスID |
 | SSMConnectCommand | SSMを使用して踏み台サーバーに接続するコマンド |
 
 ## 2. dms-replication.yaml
 
-AWS DMSを使用してセカンドDBからマスターDBへのレプリケーションを設定するためのテンプレートです。
+AWS DMSを使用してソースDBからターゲットDBへのレプリケーションを設定するためのテンプレートです。
 
 ### 主要リソース
 
@@ -50,8 +50,8 @@ AWS DMSを使用してセカンドDBからマスターDBへのレプリケーシ
 - **DMSセキュリティグループ** - 既存のRDSセキュリティグループとの通信を許可
 - **DMSサービスロール** - 必要なIAMロールとポリシー
 - **DMSレプリケーションインスタンス** - レプリケーションを実行するインスタンス
-- **DMSソースエンドポイント** - セカンドDBを指すエンドポイント
-- **DMSターゲットエンドポイント** - マスターDBを指すエンドポイント
+- **DMSソースエンドポイント** - ソースDBを指すエンドポイント
+- **DMSターゲットエンドポイント** - ターゲットDBを指すエンドポイント
 - **DMSレプリケーションタスク** - レプリケーション設定
 
 ### パラメータ

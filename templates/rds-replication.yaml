@@ -2,15 +2,15 @@ AWSTemplateFormatVersion: '2010-09-09'
 Description: 'RDSレプリケーション検証環境 - Aurora MySQL構成'
 
 Parameters:
-  MasterDBName:
+  TargetDBName:
     Type: String
     Default: hogedb
-    Description: マスターデータベース名
+    Description: ターゲットデータベース名
 
-  SecondDBName:
+  SourceDBName:
     Type: String
     Default: fugadb
-    Description: 2つ目のRDSインスタンス上のデータベース名
+    Description: ソースRDSインスタンス上のデータベース名
 
   DBInstanceClass:
     Type: String
@@ -291,41 +291,41 @@ Resources:
 
           # 接続情報をファイルに保存
           echo "# DB接続情報" > /home/ec2-user/db-scripts/db_info.txt
-          echo "マスターDB: ${MasterDBCluster.Endpoint.Address}" >> /home/ec2-user/db-scripts/db_info.txt
-          echo "セカンドDB: ${SecondDBCluster.Endpoint.Address}" >> /home/ec2-user/db-scripts/db_info.txt
+          echo "ターゲットDB: ${MasterDBCluster.Endpoint.Address}" >> /home/ec2-user/db-scripts/db_info.txt
+          echo "ソースDB: ${SecondDBCluster.Endpoint.Address}" >> /home/ec2-user/db-scripts/db_info.txt
           echo "ユーザー名: ${DBUsername}" >> /home/ec2-user/db-scripts/db_info.txt
-          echo "マスターDB名: ${MasterDBName}" >> /home/ec2-user/db-scripts/db_info.txt
-          echo "セカンドDB名: ${SecondDBName}" >> /home/ec2-user/db-scripts/db_info.txt
+          echo "ターゲットDB名: ${TargetDBName}" >> /home/ec2-user/db-scripts/db_info.txt
+          echo "ソースDB名: ${SourceDBName}" >> /home/ec2-user/db-scripts/db_info.txt
 
-          # マスターDB接続用スクリプト
-          cat > /home/ec2-user/db-scripts/connect_master_db.sh << EOF
+          # ターゲットDB接続用スクリプト
+          cat > /home/ec2-user/db-scripts/connect_target_db.sh << EOF
           #!/bin/bash
           # 動的にエンドポイントを取得
           MASTER_ENDPOINT=\$(aws cloudformation describe-stacks --stack-name \$(aws ec2 describe-tags --filters "Name=resource-id,Values=\$(curl -s http://169.254.169.254/latest/meta-data/instance-id)" "Name=key,Values=aws:cloudformation:stack-name" --query "Tags[0].Value" --output text) --query "Stacks[0].Outputs[?OutputKey=='MasterDBEndpoint'].OutputValue" --output text)
 
           echo "接続先: \$MASTER_ENDPOINT"
-          mysql -h \$MASTER_ENDPOINT -u ${DBUsername} -p ${MasterDBName}
+          mysql -h \$MASTER_ENDPOINT -u ${DBUsername} -p ${TargetDBName}
           EOF
 
-          # セカンドDB接続用スクリプト
-          cat > /home/ec2-user/db-scripts/connect_second_db.sh << EOF
+          # ソースDB接続用スクリプト
+          cat > /home/ec2-user/db-scripts/connect_source_db.sh << EOF
           #!/bin/bash
           # 動的にエンドポイントを取得
           SECOND_ENDPOINT=\$(aws cloudformation describe-stacks --stack-name \$(aws ec2 describe-tags --filters "Name=resource-id,Values=\$(curl -s http://169.254.169.254/latest/meta-data/instance-id)" "Name=key,Values=aws:cloudformation:stack-name" --query "Tags[0].Value" --output text) --query "Stacks[0].Outputs[?OutputKey=='SecondDBEndpoint'].OutputValue" --output text)
 
           echo "接続先: \$SECOND_ENDPOINT"
-          mysql -h \$SECOND_ENDPOINT -u ${DBUsername} -p ${SecondDBName}
+          mysql -h \$SECOND_ENDPOINT -u ${DBUsername} -p ${SourceDBName}
           EOF
 
           # 適切なパーミッションを設定
-          chmod +x /home/ec2-user/db-scripts/connect_master_db.sh
-          chmod +x /home/ec2-user/db-scripts/connect_second_db.sh
+          chmod +x /home/ec2-user/db-scripts/connect_target_db.sh
+          chmod +x /home/ec2-user/db-scripts/connect_source_db.sh
           chmod 640 /home/ec2-user/db-scripts/db_info.txt
           chown -R ec2-user:ec2-user /home/ec2-user/db-scripts
 
           # 便利なエイリアスを設定
-          echo "alias connect-master='/home/ec2-user/db-scripts/connect_master_db.sh'" >> /home/ec2-user/.bashrc
-          echo "alias connect-second='/home/ec2-user/db-scripts/connect_second_db.sh'" >> /home/ec2-user/.bashrc
+          echo "alias connect-target='/home/ec2-user/db-scripts/connect_target_db.sh'" >> /home/ec2-user/.bashrc
+          echo "alias connect-source='/home/ec2-user/db-scripts/connect_source_db.sh'" >> /home/ec2-user/.bashrc
 
           echo "EC2 bastion host setup complete" > /home/ec2-user/setup_complete
       Tags:
@@ -405,13 +405,13 @@ Resources:
       AliasName: !Sub 'alias/${AWS::StackName}-rds-key'
       TargetKeyId: !Ref RDSEncryptionKey
 
-  # マスターDBクラスター - hogedbデータベースを持つAuroraクラスター
+  # ターゲットDBクラスター - hogedbデータベースを持つAuroraクラスター
   MasterDBCluster:
     Type: AWS::RDS::DBCluster
     Properties:
       Engine: aurora-mysql
       EngineVersion: 8.0.mysql_aurora.3.08.1
-      DatabaseName: !Ref MasterDBName
+      DatabaseName: !Ref TargetDBName
       MasterUsername: !Ref DBUsername
       MasterUserPassword: !Ref DBPassword
       DBSubnetGroupName: !Ref DBSubnetGroup
@@ -428,7 +428,7 @@ Resources:
         - Key: Name
           Value: RDS1-Master-Cluster
 
-  # マスターDBインスタンス (RDS1) - hogedbデータベースを持つマスターインスタンス
+  # ターゲットDBインスタンス (RDS1) - hogedbデータベースを持つマスターインスタンス
   MasterDBInstance:
     Type: AWS::RDS::DBInstance
     Properties:
@@ -448,7 +448,7 @@ Resources:
     Properties:
       Engine: aurora-mysql
       EngineVersion: 8.0.mysql_aurora.3.08.1
-      DatabaseName: !Ref SecondDBName
+      DatabaseName: !Ref SourceDBName
       MasterUsername: !Ref DBUsername
       MasterUserPassword: !Ref DBPassword
       DBSubnetGroupName: !Ref DBSubnetGroup
@@ -480,14 +480,14 @@ Resources:
           Value: RDS2-Second
 
 Outputs:
-  # マスターDBのエンドポイント - RDS1への接続情報
+  # ターゲットDBのエンドポイント - RDS1への接続情報
   MasterDBEndpoint:
-    Description: マスターDBのエンドポイント
+    Description: ターゲットDBのエンドポイント
     Value: !GetAtt MasterDBCluster.Endpoint.Address
 
-  # マスターDBのリードエンドポイント
+  # ターゲットDBのリードエンドポイント
   MasterDBReadEndpoint:
-    Description: マスターDBのリードエンドポイント
+    Description: ターゲットDBのリードエンドポイント
     Value: !GetAtt MasterDBCluster.ReadEndpoint.Address
 
   # 2つ目のDBのエンドポイント - RDS2への接続情報

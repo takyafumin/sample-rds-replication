@@ -156,7 +156,7 @@ Resources:
         - Key: Name
           Value: DMS-Replication-Instance
 
-  # DMS ソースエンドポイント - セカンドDBを指す
+  # DMS ソースエンドポイント - ソースDBを指す
   DMSSourceEndpoint:
     Type: AWS::DMS::Endpoint
     Properties:
@@ -173,7 +173,7 @@ Resources:
         - Key: Name
           Value: DMS-Source-Endpoint
 
-  # DMS ターゲットエンドポイント - マスターDBを指す
+  # DMS ターゲットエンドポイント - ターゲットDBを指す
   DMSTargetEndpoint:
     Type: AWS::DMS::Endpoint
     Properties:

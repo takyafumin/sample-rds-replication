@@ -14,30 +14,30 @@ graph TD
         subgraph "プライベートサブネット"
             DMS["DMSレプリケーション\nインスタンス"]
 
-            subgraph "マスターDBクラスター"
-                MasterDB["Aurora MySQL\n(ターゲット)"]
-                MasterDBR["Aurora MySQL\nレプリカ"]
+            subgraph "ターゲットDBクラスター"
+                TargetDB["Aurora MySQL\n(ターゲット)"]
+                TargetDBR["Aurora MySQL\nレプリカ"]
             end
 
-            subgraph "セカンドDBクラスター"
-                SecondDB["Aurora MySQL\n(ソース)"]
-                SecondDBR["Aurora MySQL\nレプリカ"]
+            subgraph "ソースDBクラスター"
+                SourceDB["Aurora MySQL\n(ソース)"]
+                SourceDBR["Aurora MySQL\nレプリカ"]
             end
         end
     end
 
     User["ユーザー"] -->|SSM接続| EC2
-    EC2 -->|管理| MasterDB
-    EC2 -->|管理| SecondDB
+    EC2 -->|管理| TargetDB
+    EC2 -->|管理| SourceDB
 
-    SecondDB -->|ソース\nエンドポイント| DMS
-    DMS -->|ターゲット\nエンドポイント| MasterDB
+    SourceDB -->|ソース\nエンドポイント| DMS
+    DMS -->|ターゲット\nエンドポイント| TargetDB
 
-    SecondDB -->|レプリケーション| SecondDBR
-    MasterDB -->|レプリケーション| MasterDBR
+    SourceDB -->|レプリケーション| SourceDBR
+    TargetDB -->|レプリケーション| TargetDBR
 
     classDef aws fill:#FF9900,stroke:#232F3E,color:white;
-    class EC2,DMS,MasterDB,MasterDBR,SecondDB,SecondDBR aws;
+    class EC2,DMS,TargetDB,TargetDBR,SourceDB,SourceDBR aws;
 ```
 
 ## コンポーネント構成
@@ -53,12 +53,12 @@ graph TD
 
 ### 2. データベース層
 
-- **マスターDBクラスター**: レプリケーションのターゲットとなるAurora MySQLクラスター
+- **ターゲットDBクラスター**: レプリケーションのターゲットとなるAurora MySQLクラスター
   - データベース名: hogedb（デフォルト）
   - エンジン: Aurora MySQL 8.0
   - マルチAZ配置: 有効
 
-- **セカンドDBクラスター**: レプリケーションのソースとなるAurora MySQLクラスター
+- **ソースDBクラスター**: レプリケーションのソースとなるAurora MySQLクラスター
   - データベース名: fugadb（デフォルト）
   - エンジン: Aurora MySQL 8.0
   - マルチAZ配置: 有効
@@ -71,8 +71,8 @@ graph TD
   - マルチAZ: 無効（テスト環境のため）
 
 - **DMSエンドポイント**:
-  - ソースエンドポイント: セカンドDBを指す
-  - ターゲットエンドポイント: マスターDBを指す
+  - ソースエンドポイント: ソースDBを指す
+  - ターゲットエンドポイント: ターゲットDBを指す
 
 - **DMSレプリケーションタスク**:
   - 移行タイプ: 全ロードおよび継続的な変更のキャプチャ（full-load-and-cdc）
@@ -87,9 +87,9 @@ graph TD
 
 ## データフロー
 
-1. セカンドDB（ソース）でデータが変更される
+1. ソースDB（ソース）でデータが変更される
 2. DMSレプリケーションインスタンスがバイナリログから変更を検出
-3. 変更がマスターDB（ターゲット）に適用される
+3. 変更がターゲットDB（ターゲット）に適用される
 
 ## セキュリティ考慮事項
 
