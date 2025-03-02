@@ -93,41 +93,57 @@ echo ""
 # サンプルデータディレクトリの確認
 echo "サンプルデータディレクトリを確認中..."
 mkdir -p "$SAMPLE_DATA_DIR"
-cd "$SAMPLE_DATA_DIR"
 
 # World データベースファイルの確認
-if [ ! -f world.sql ]; then
+if [ ! -f "$SAMPLE_DATA_DIR/world.sql" ]; then
   echo "エラー: world.sql ファイルが見つかりません。"
   echo "resources/samples ディレクトリに world.sql ファイルを手動で配置してください。"
   exit 1
 fi
 
-# Employees データベースファイルの確認
-if [ ! -f employees.sql ]; then
-  echo "エラー: employees.sql ファイルが見つかりません。"
-  echo "resources/samples ディレクトリに employees.sql ファイルを手動で配置してください。"
-  exit 1
-fi
-
 echo "必要なファイルが見つかりました。データベースのインポートを開始します..."
 
-# セカンドDBにサンプルデータベースをインポート
-echo "セカンドDBにWorld データベースをインポート中..."
-mysql -h $SECOND_DB_ENDPOINT -u $DB_USERNAME -p$DB_PASSWORD -e "CREATE DATABASE IF NOT EXISTS world;"
-mysql -h $SECOND_DB_ENDPOINT -u $DB_USERNAME -p$DB_PASSWORD world < world.sql
+# ホスト名とポートを分離する関数
+parse_endpoint() {
+    local endpoint=$1
+    local host=$(echo $endpoint | cut -d':' -f1)
+    local port=$(echo $endpoint | cut -d':' -f2)
+    echo "$host $port"
+}
 
-echo "セカンドDBにEmployees データベースをインポート中..."
-mysql -h $SECOND_DB_ENDPOINT -u $DB_USERNAME -p$DB_PASSWORD -e "CREATE DATABASE IF NOT EXISTS employees;"
-mysql -h $SECOND_DB_ENDPOINT -u $DB_USERNAME -p$DB_PASSWORD employees < employees.sql
+# エンドポイントを解析
+SECOND_DB_HOST=$(echo $SECOND_DB_ENDPOINT | cut -d':' -f1)
+SECOND_DB_PORT=$(echo $SECOND_DB_ENDPOINT | cut -d':' -f2)
+MASTER_DB_HOST=$(echo $MASTER_DB_ENDPOINT | cut -d':' -f1)
+MASTER_DB_PORT=$(echo $MASTER_DB_ENDPOINT | cut -d':' -f2)
 
-# マスターDBに空のWorldデータベースを作成
-echo "マスターDBに空のWorld データベースを作成中..."
-mysql -h $MASTER_DB_ENDPOINT -u $DB_USERNAME -p$DB_PASSWORD -e "CREATE DATABASE IF NOT EXISTS world;"
+# セカンドDBにWorldデータベースをインポート（レプリケーション対象）
+echo "セカンドDBにWorld データベースをインポート中（レプリケーション対象）..."
+mysql -h $SECOND_DB_HOST -P $SECOND_DB_PORT -u $DB_USERNAME -p$DB_PASSWORD --protocol=TCP -e "CREATE DATABASE IF NOT EXISTS world;"
+mysql -h $SECOND_DB_HOST -P $SECOND_DB_PORT -u $DB_USERNAME -p$DB_PASSWORD --protocol=TCP world < "$SAMPLE_DATA_DIR/world.sql"
+
+# セカンドDBにWorldNonReplデータベースをインポート（レプリケーション非対象）
+echo "セカンドDBにWorldNonRepl データベースをインポート中（レプリケーション非対象）..."
+mysql -h $SECOND_DB_HOST -P $SECOND_DB_PORT -u $DB_USERNAME -p$DB_PASSWORD --protocol=TCP -e "CREATE DATABASE IF NOT EXISTS worldnonrepl;"
+mysql -h $SECOND_DB_HOST -P $SECOND_DB_PORT -u $DB_USERNAME -p$DB_PASSWORD --protocol=TCP worldnonrepl < "$SAMPLE_DATA_DIR/world.sql"
+
+# マスターDBに空のWorldデータベースを作成（レプリケーション対象）
+echo "マスターDBに空のWorld データベースを作成中（レプリケーション対象）..."
+mysql -h $MASTER_DB_HOST -P $MASTER_DB_PORT -u $DB_USERNAME -p$DB_PASSWORD --protocol=TCP -e "CREATE DATABASE IF NOT EXISTS world;"
 
 echo "サンプルデータベースのインポートが完了しました。"
 echo "セカンドDB: $SECOND_DB_ENDPOINT"
+echo "  - world データベース（レプリケーション対象）"
+echo "  - worldnonrepl データベース（レプリケーション非対象）"
 echo "マスターDB: $MASTER_DB_ENDPOINT"
+echo "  - world データベース（空、レプリケーション対象）"
 echo ""
 echo "次のステップ:"
-echo "1. DMSレプリケーションスタックをデプロイしてください。"
-echo "2. レプリケーションタスクが完了したら、verify_replication.sh スクリプトを実行してレプリケーションを検証してください。"
+echo "1. DMSレプリケーションスタックをデプロイしてください:"
+echo "   ./run.sh deploy-dms --db-password <パスワード> --source-db world"
+echo "2. レプリケーションタスクが完了したら、レプリケーションを検証してください:"
+echo "   ./run.sh verify-replication --master-port <マスターポート> --second-port <セカンドポート>"
+echo ""
+echo "検証のポイント:"
+echo "- world データベースはレプリケーションされるはずです"
+echo "- worldnonrepl データベースはレプリケーションされないはずです"

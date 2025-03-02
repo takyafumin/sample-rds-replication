@@ -99,16 +99,17 @@ graph TD
 ```
 
 このスクリプトは以下の処理を行います：
-- WorldデータベースとEmployeesデータベースをダウンロード
-- セカンドDBにこれらのデータベースをインポート
-- マスターDBに空のWorldデータベースを作成
+- セカンドDBに以下のデータベースをインポート：
+  - `world` データベース（レプリケーション対象）
+  - `worldnonrepl` データベース（レプリケーション非対象）
+- マスターDBに空の `world` データベースを作成（レプリケーションのターゲット）
 
 ### ステップ3: DMSレプリケーションをデプロイ
 
 サンプルデータベースのインポートが完了したら、DMSレプリケーションをデプロイします。
 
 ```bash
-./run.sh deploy-dms --db-password YourStrongPassword --source-db world
+./run.sh deploy-dms --db-password YourStrongPassword
 ```
 
 デプロイには約10〜15分かかります。デプロイの進行状況は以下のコマンドで確認できます：
@@ -122,18 +123,13 @@ graph TD
 DMSレプリケーションのデプロイが完了したら、レプリケーションが正常に機能しているかを検証します。
 
 ```bash
-# 踏み台サーバーに接続
-./run.sh connect-ec2
-
-# 踏み台サーバー上でスクリプトを実行
-chmod +x scripts/verify_replication.sh
-./scripts/verify_replication.sh rds-replication-stack
+./run.sh verify-replication --master-port 13306 --second-port 13307
 ```
 
 このスクリプトは以下の検証を行います：
-- ソースとターゲットのデータベース間でテーブル数を比較
-- 各テーブルの行数を比較
-- 新しい行を挿入して継続的なレプリケーションをテスト
+- `world` データベースがレプリケーションされているか確認
+- `worldnonrepl` データベースがレプリケーションされていないか確認
+- 継続的なレプリケーションをテスト（新しい行を挿入して複製されるか確認）
 
 ### ステップ5: DMSタスクの管理
 
@@ -164,7 +160,7 @@ DMSタスクを管理するには、以下のコマンドを使用します：
 
 このリポジトリには以下のヘルパースクリプトが含まれています：
 
-1. **scripts/import_sample_db.sh** - サンプルデータベース（WorldとEmployees）をセカンドDBにインポートし、マスターDBに空のWorldデータベースを作成
+1. **scripts/import_sample_db.sh** - サンプルデータベース（World）をセカンドDBにインポートし、マスターDBに空のWorldデータベースを作成
 2. **scripts/verify_replication.sh** - レプリケーションが正常に機能しているかを検証
 3. **scripts/manage_dms_task.sh** - DMSタスクの管理（開始、停止、ステータス確認、再起動）
 

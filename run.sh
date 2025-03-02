@@ -32,20 +32,27 @@ function show_help {
     echo -e "  ${GREEN}connect-ec2${NC}         - 踏み台EC2インスタンスにSSM接続します"
     echo -e "  ${GREEN}port-forward-master${NC} - マスターDBへのポートフォワーディングを設定します"
     echo -e "  ${GREEN}port-forward-second${NC} - セカンドDBへのポートフォワーディングを設定します"
+    echo -e "  ${GREEN}prepare-sample-data${NC} - サンプルデータファイルを準備します"
     echo -e "  ${GREEN}import-sample-db${NC}    - ローカルからサンプルデータベースをインポートします"
+    echo -e "  ${GREEN}verify-replication${NC}  - レプリケーションの検証を行います"
     echo -e "  ${GREEN}deploy-dms${NC}          - DMSレプリケーションスタックをデプロイします"
     echo -e "  ${GREEN}status-dms${NC}          - DMSレプリケーションスタックのステータスを表示します"
     echo -e "  ${GREEN}start-dms${NC}           - DMSレプリケーションタスクを開始します"
     echo -e "  ${GREEN}stop-dms${NC}            - DMSレプリケーションタスクを停止します"
     echo -e "  ${GREEN}restart-dms${NC}         - DMSレプリケーションタスクを再起動します"
+    echo -e "  ${GREEN}delete-dms${NC}          - DMSレプリケーションスタックを削除します"
     echo -e "  ${GREEN}help${NC}                - このヘルプメッセージを表示します"
     echo ""
     echo -e "${YELLOW}例:${NC}"
     echo -e "  $0 ${GREEN}deploy${NC} --db-password MySecurePassword123"
     echo -e "  $0 ${GREEN}connect-ec2${NC}"
+    echo -e "  $0 ${GREEN}prepare-sample-data${NC}"
     echo -e "  $0 ${GREEN}port-forward-master${NC} --local-port 13306"
+    echo -e "  $0 ${GREEN}port-forward-second${NC} --local-port 13307"
     echo -e "  $0 ${GREEN}import-sample-db${NC} --master-port 13306 --second-port 13307"
+    echo -e "  $0 ${GREEN}verify-replication${NC} --master-port 13306 --second-port 13307"
     echo -e "  $0 ${GREEN}deploy-dms${NC} --db-password MySecurePassword123 --source-db world"
+    echo -e "  $0 ${GREEN}delete-dms${NC}"
     echo ""
 }
 
@@ -66,6 +73,100 @@ function get_stack_output {
     local output_key=$1
     aws cloudformation describe-stacks --stack-name $STACK_NAME --region $REGION \
         --query "Stacks[0].Outputs[?OutputKey=='$output_key'].OutputValue" --output text
+}
+
+# サンプルデータファイルを準備
+function prepare_sample_data {
+    echo -e "${BLUE}サンプルデータファイルを準備しています...${NC}"
+
+    # サンプルデータディレクトリを作成
+    local SAMPLE_DIR="resources/samples"
+    mkdir -p "$SAMPLE_DIR"
+
+    # World データベースの準備
+    if [ -f "$SAMPLE_DIR/world.sql" ]; then
+        echo -e "${GREEN}world.sql ファイルは既に存在します${NC}"
+    elif [ -f "$SAMPLE_DIR/world-db.zip" ]; then
+        echo -e "${BLUE}world-db.zip を解凍しています...${NC}"
+
+        # 一時ディレクトリを作成
+        local TEMP_DIR=$(mktemp -d)
+        unzip -q "$SAMPLE_DIR/world-db.zip" -d "$TEMP_DIR"
+
+        # 解凍されたSQLファイルを探して移動
+        local SQL_FILE=$(find "$TEMP_DIR" -name "*.sql" | head -n 1)
+        if [ -n "$SQL_FILE" ]; then
+            cp "$SQL_FILE" "$SAMPLE_DIR/world.sql"
+            echo -e "${GREEN}world.sql ファイルを作成しました${NC}"
+        else
+            echo -e "${RED}world-db.zip 内にSQLファイルが見つかりませんでした${NC}"
+            echo -e "${YELLOW}手動で world.sql ファイルを $SAMPLE_DIR ディレクトリに配置してください${NC}"
+        fi
+
+        # 一時ディレクトリを削除
+        rm -rf "$TEMP_DIR"
+    else
+        echo -e "${YELLOW}world-db.zip ファイルが見つかりません${NC}"
+        echo -e "${YELLOW}MySQL公式サイト (https://dev.mysql.com/doc/index-other.html) から「world database」をダウンロードし、${NC}"
+        echo -e "${YELLOW}$SAMPLE_DIR/world.sql として保存してください${NC}"
+    fi
+
+    # Employees データベースの準備
+    if [ -f "$SAMPLE_DIR/employees.sql" ]; then
+        echo -e "${GREEN}employees.sql ファイルは既に存在します${NC}"
+    elif [ -f "$SAMPLE_DIR/test_db-1.0.7.tar.gz" ]; then
+        echo -e "${BLUE}test_db-1.0.7.tar.gz を解凍しています...${NC}"
+
+        # 一時ディレクトリを作成
+        local TEMP_DIR=$(mktemp -d)
+
+        # tar.gzファイルを解凍
+        echo -e "${BLUE}アーカイブを展開中...${NC}"
+        tar -xzf "$SAMPLE_DIR/test_db-1.0.7.tar.gz" -C "$TEMP_DIR"
+
+        # 解凍されたディレクトリを探す
+        local TEST_DB_DIR=$(find "$TEMP_DIR" -type d -name "test_db*" | head -n 1)
+
+        if [ -d "$TEST_DB_DIR" ]; then
+            # employees.sqlファイルが存在するか確認
+            if [ -f "$TEST_DB_DIR/employees.sql" ]; then
+                echo -e "${BLUE}employees.sql ファイルをコピーしています...${NC}"
+                cp "$TEST_DB_DIR/employees.sql" "$SAMPLE_DIR/employees.sql"
+                echo -e "${GREEN}employees.sql ファイルを作成しました${NC}"
+                echo -e "${BLUE}ファイルサイズ: $(du -h "$SAMPLE_DIR/employees.sql" | cut -f1)${NC}"
+            else
+                echo -e "${RED}employees.sql ファイルが見つかりません${NC}"
+                echo -e "${YELLOW}手動で employees.sql ファイルを $SAMPLE_DIR ディレクトリに配置してください${NC}"
+            fi
+        else
+            echo -e "${RED}test_db-1.0.7.tar.gz の解凍に失敗しました${NC}"
+            echo -e "${YELLOW}手動で employees.sql ファイルを $SAMPLE_DIR ディレクトリに配置してください${NC}"
+        fi
+
+        # 一時ディレクトリを削除
+        echo -e "${BLUE}一時ファイルを削除中...${NC}"
+        rm -rf "$TEMP_DIR"
+    else
+        echo -e "${YELLOW}test_db-1.0.7.tar.gz ファイルが見つかりません${NC}"
+        echo -e "${YELLOW}以下の手順でEmployeesデータベースを準備してください:${NC}"
+        echo -e "1. ${YELLOW}GitHub リポジトリ (https://github.com/datacharmer/test_db) からダウンロード${NC}"
+        echo -e "2. ${YELLOW}ダウンロードしたファイルを $SAMPLE_DIR/test_db-1.0.7.tar.gz として保存${NC}"
+        echo -e "3. ${YELLOW}再度 ./run.sh prepare-sample-data を実行${NC}"
+    fi
+
+    # 結果の確認
+    if [ -f "$SAMPLE_DIR/world.sql" ] && [ -f "$SAMPLE_DIR/employees.sql" ]; then
+        echo -e "${GREEN}サンプルデータファイルの準備が完了しました${NC}"
+        echo -e "${BLUE}次のステップ:${NC}"
+        echo -e "1. ${YELLOW}./run.sh port-forward-master --local-port 13306${NC} (別ターミナルで実行)"
+        echo -e "2. ${YELLOW}./run.sh port-forward-second --local-port 13307${NC} (別ターミナルで実行)"
+        echo -e "3. ${YELLOW}./run.sh import-sample-db --master-port 13306 --second-port 13307${NC}"
+    else
+        echo -e "${RED}サンプルデータファイルの準備に失敗しました${NC}"
+        echo -e "${YELLOW}必要なファイルを手動で $SAMPLE_DIR ディレクトリに配置してください:${NC}"
+        [ ! -f "$SAMPLE_DIR/world.sql" ] && echo -e "- world.sql"
+        [ ! -f "$SAMPLE_DIR/employees.sql" ] && echo -e "- employees.sql"
+    fi
 }
 
 # ローカルからサンプルデータベースをインポート
@@ -97,28 +198,67 @@ function import_sample_db_local {
         return 1
     fi
 
+    # サンプルデータファイルの存在確認
+    local SAMPLE_DIR="resources/samples"
+    if [ ! -f "$SAMPLE_DIR/world.sql" ] || [ ! -f "$SAMPLE_DIR/employees.sql" ]; then
+        echo -e "${RED}エラー: サンプルデータファイルが見つかりません${NC}"
+        echo -e "${YELLOW}先に以下のコマンドを実行してサンプルデータを準備してください:${NC}"
+        echo -e "  $0 prepare-sample-data"
+        return 1
+    fi
+
     echo -e "${BLUE}ローカルからサンプルデータベースをインポートします...${NC}"
     echo -e "${YELLOW}注意: このコマンドを実行する前に、別のターミナルで以下のコマンドを実行してポートフォワーディングを設定してください:${NC}"
     echo -e "  $0 port-forward-master --local-port $master_port"
     echo -e "  $0 port-forward-second --local-port $second_port"
     echo ""
 
-    read -p "ポートフォワーディングが設定されていますか？ (y/n): " confirm
-    if [ "$confirm" != "y" ]; then
-        echo -e "${BLUE}操作をキャンセルしました${NC}"
-        return 0
+    # ポートフォワーディングの確認
+    echo -e "${BLUE}ポートフォワーディングの接続確認を行います...${NC}"
+    local master_check=false
+    local second_check=false
+
+    # マスターDBへの接続確認
+    if nc -z localhost $master_port 2>/dev/null; then
+        echo -e "${GREEN}マスターDBへのポートフォワーディング (localhost:$master_port) が正常に機能しています${NC}"
+        master_check=true
+    else
+        echo -e "${RED}マスターDBへのポートフォワーディングが機能していません${NC}"
+        echo -e "${YELLOW}別のターミナルで以下のコマンドを実行してください:${NC}"
+        echo -e "  $0 port-forward-master --local-port $master_port"
+    fi
+
+    # セカンドDBへの接続確認
+    if nc -z localhost $second_port 2>/dev/null; then
+        echo -e "${GREEN}セカンドDBへのポートフォワーディング (localhost:$second_port) が正常に機能しています${NC}"
+        second_check=true
+    else
+        echo -e "${RED}セカンドDBへのポートフォワーディングが機能していません${NC}"
+        echo -e "${YELLOW}別のターミナルで以下のコマンドを実行してください:${NC}"
+        echo -e "  $0 port-forward-second --local-port $second_port"
+    fi
+
+    # 両方のポートフォワーディングが機能していない場合は終了
+    if [ "$master_check" = false ] || [ "$second_check" = false ]; then
+        echo -e "${RED}ポートフォワーディングの設定を確認してから再試行してください${NC}"
+        return 1
     fi
 
     # スクリプトを実行
     echo -e "${BLUE}サンプルデータベースのインポートを開始します...${NC}"
     ./scripts/import_sample_db.sh --local \
-        --master-endpoint "localhost:$master_port" \
-        --second-endpoint "localhost:$second_port"
+        --second-endpoint "localhost:$second_port" \
+        --master-endpoint "localhost:$master_port"
 
     if [ $? -eq 0 ]; then
         echo -e "${GREEN}サンプルデータベースのインポートが完了しました${NC}"
+        echo -e "${BLUE}次のステップ:${NC}"
+        echo -e "1. ${YELLOW}./run.sh deploy-dms --db-password <パスワード> --source-db world${NC}"
+        echo -e "2. DMSレプリケーションが完了したら: ${YELLOW}./run.sh verify-replication --master-port $master_port --second-port $second_port${NC}"
     else
         echo -e "${RED}サンプルデータベースのインポートに失敗しました${NC}"
+        echo -e "${YELLOW}エラーの詳細を確認するには、スクリプトを直接実行してみてください:${NC}"
+        echo -e "  ./scripts/import_sample_db.sh --local --second-endpoint localhost:$second_port --master-endpoint localhost:$master_port"
         return 1
     fi
 }
@@ -577,6 +717,7 @@ function deploy_dms_stack {
     fi
 
     echo -e "${BLUE}DMSレプリケーションスタックをデプロイしています...${NC}"
+    echo -e "${BLUE}ソースデータベース: ${source_db_name}${NC}"
 
     # CloudFormationスタックをデプロイ
     aws cloudformation deploy \
@@ -593,6 +734,9 @@ function deploy_dms_stack {
     local result=$?
     if [ $result -eq 0 ]; then
         echo -e "${GREEN}DMSレプリケーションスタックのデプロイが完了しました${NC}"
+        echo -e "${BLUE}次のステップ:${NC}"
+        echo -e "1. ${YELLOW}./run.sh status-dms${NC} でDMSタスクのステータスを確認"
+        echo -e "2. レプリケーションが完了したら: ${YELLOW}./run.sh verify-replication --master-port 13306 --second-port 13307${NC}"
     else
         echo -e "${RED}DMSレプリケーションスタックのデプロイに失敗しました${NC}"
     fi
@@ -668,6 +812,225 @@ function manage_dms_task {
     echo -e "${GREEN}コマンドが実行されました。タスクのステータスを確認するには './run.sh status-dms' を実行してください${NC}"
 }
 
+# ローカルからレプリケーションを検証
+function verify_replication_local {
+    local master_port=13306
+    local second_port=13307
+
+    # パラメータの解析
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --master-port)
+                master_port="$2"
+                shift 2
+                ;;
+            --second-port)
+                second_port="$2"
+                shift 2
+                ;;
+            *)
+                echo -e "${RED}エラー: 不明なオプション: $1${NC}"
+                return 1
+                ;;
+        esac
+    done
+
+    # スタックが存在するか確認
+    if ! check_stack_exists; then
+        echo -e "${RED}エラー: スタック '$STACK_NAME' が存在しません${NC}"
+        return 1
+    fi
+
+    # DMSスタックが存在するか確認
+    if ! aws cloudformation describe-stacks --stack-name $DMS_STACK_NAME &>/dev/null; then
+        echo -e "${RED}エラー: DMSスタック '$DMS_STACK_NAME' が存在しません${NC}"
+        echo -e "${YELLOW}先に以下のコマンドを実行してDMSレプリケーションをデプロイしてください:${NC}"
+        echo -e "  $0 deploy-dms --db-password <パスワード> --source-db world"
+        return 1
+    fi
+
+    # ポートフォワーディングの確認
+    echo -e "${BLUE}ポートフォワーディングの接続確認を行います...${NC}"
+    local master_check=false
+    local second_check=false
+
+    # マスターDBへの接続確認
+    if nc -z localhost $master_port 2>/dev/null; then
+        echo -e "${GREEN}マスターDBへのポートフォワーディング (localhost:$master_port) が正常に機能しています${NC}"
+        master_check=true
+    else
+        echo -e "${RED}マスターDBへのポートフォワーディングが機能していません${NC}"
+        echo -e "${YELLOW}別のターミナルで以下のコマンドを実行してください:${NC}"
+        echo -e "  $0 port-forward-master --local-port $master_port"
+    fi
+
+    # セカンドDBへの接続確認
+    if nc -z localhost $second_port 2>/dev/null; then
+        echo -e "${GREEN}セカンドDBへのポートフォワーディング (localhost:$second_port) が正常に機能しています${NC}"
+        second_check=true
+    else
+        echo -e "${RED}セカンドDBへのポートフォワーディングが機能していません${NC}"
+        echo -e "${YELLOW}別のターミナルで以下のコマンドを実行してください:${NC}"
+        echo -e "  $0 port-forward-second --local-port $second_port"
+    fi
+
+    # 両方のポートフォワーディングが機能していない場合は終了
+    if [ "$master_check" = false ] || [ "$second_check" = false ]; then
+        echo -e "${RED}ポートフォワーディングの設定を確認してから再試行してください${NC}"
+        return 1
+    fi
+
+    # 認証情報の入力
+    read -p "データベースユーザー名: " DB_USERNAME
+    read -sp "データベースパスワード: " DB_PASSWORD
+    echo ""
+
+    echo -e "${BLUE}レプリケーション状態を検証中...${NC}"
+
+    # 1. レプリケーション対象データベース（world）の検証
+    echo -e "${BLUE}=== レプリケーション対象データベース (world) の検証 ===${NC}"
+
+    # セカンドDBのテーブル数を取得
+    echo -e "${BLUE}セカンドDB (ソース) のテーブル数を取得中...${NC}"
+    local SECOND_DB_TABLES=$(mysql -h localhost -P $second_port -u $DB_USERNAME -p$DB_PASSWORD --protocol=TCP -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'world';" -s)
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}セカンドDBへの接続に失敗しました${NC}"
+        return 1
+    fi
+
+    # マスターDBのテーブル数を取得
+    echo -e "${BLUE}マスターDB (ターゲット) のテーブル数を取得中...${NC}"
+    local MASTER_DB_TABLES=$(mysql -h localhost -P $master_port -u $DB_USERNAME -p$DB_PASSWORD --protocol=TCP -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'world';" -s)
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}マスターDBへの接続に失敗しました${NC}"
+        return 1
+    fi
+
+    echo -e "${BLUE}セカンドDB (ソース) のテーブル数: ${NC}$SECOND_DB_TABLES"
+    echo -e "${BLUE}マスターDB (ターゲット) のテーブル数: ${NC}$MASTER_DB_TABLES"
+
+    if [ "$SECOND_DB_TABLES" -eq "$MASTER_DB_TABLES" ]; then
+        echo -e "${GREEN}✅ テーブル数が一致しています。レプリケーションが正常に機能しています。${NC}"
+    else
+        echo -e "${RED}❌ テーブル数が一致していません。レプリケーションに問題がある可能性があります。${NC}"
+    fi
+
+    # 各テーブルの行数を比較
+    echo ""
+    echo -e "${BLUE}各テーブルの行数を比較中...${NC}"
+
+    # テーブル一覧を取得
+    local TABLES=$(mysql -h localhost -P $second_port -u $DB_USERNAME -p$DB_PASSWORD --protocol=TCP -e "SHOW TABLES FROM world;" -s)
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}テーブル一覧の取得に失敗しました${NC}"
+        return 1
+    fi
+
+    # 各テーブルの行数を比較
+    local all_match=true
+    for TABLE in $TABLES; do
+        local SECOND_DB_ROWS=$(mysql -h localhost -P $second_port -u $DB_USERNAME -p$DB_PASSWORD --protocol=TCP -e "SELECT COUNT(*) FROM world.$TABLE;" -s)
+        local MASTER_DB_ROWS=$(mysql -h localhost -P $master_port -u $DB_USERNAME -p$DB_PASSWORD --protocol=TCP -e "SELECT COUNT(*) FROM world.$TABLE;" -s)
+
+        echo -e "${BLUE}テーブル: ${NC}$TABLE"
+        echo -e "  ${BLUE}セカンドDB (ソース) の行数: ${NC}$SECOND_DB_ROWS"
+        echo -e "  ${BLUE}マスターDB (ターゲット) の行数: ${NC}$MASTER_DB_ROWS"
+
+        if [ "$SECOND_DB_ROWS" -eq "$MASTER_DB_ROWS" ]; then
+            echo -e "  ${GREEN}✅ 行数が一致しています。${NC}"
+        else
+            echo -e "  ${RED}❌ 行数が一致していません。${NC}"
+            all_match=false
+        fi
+        echo ""
+    done
+
+    # 2. レプリケーション非対象データベース（worldnonrepl）の検証
+    echo -e "${BLUE}=== レプリケーション非対象データベース (worldnonrepl) の検証 ===${NC}"
+
+    # マスターDBにworldnonreplデータベースが存在するか確認
+    local NONREPL_DB_EXISTS=$(mysql -h localhost -P $master_port -u $DB_USERNAME -p$DB_PASSWORD --protocol=TCP -e "SELECT COUNT(*) FROM information_schema.schemata WHERE schema_name = 'worldnonrepl';" -s)
+
+    if [ "$NONREPL_DB_EXISTS" -eq "0" ]; then
+        echo -e "${GREEN}✅ worldnonreplデータベースはマスターDBに存在しません。レプリケーション対象外の設定が正常に機能しています。${NC}"
+    else
+        echo -e "${RED}❌ worldnonreplデータベースがマスターDBに存在します。レプリケーション対象外の設定に問題がある可能性があります。${NC}"
+        all_match=false
+
+        # worldnonreplデータベースのテーブル数を確認
+        local NONREPL_TABLES=$(mysql -h localhost -P $master_port -u $DB_USERNAME -p$DB_PASSWORD --protocol=TCP -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'worldnonrepl';" -s)
+        echo -e "${BLUE}マスターDBのworldnonreplデータベースのテーブル数: ${NC}$NONREPL_TABLES"
+    fi
+
+    # 3. 継続的なレプリケーションをテスト
+    echo -e "${BLUE}=== 継続的なレプリケーションをテスト ===${NC}"
+    echo -e "${BLUE}セカンドDB (ソース) に新しい行を挿入します...${NC}"
+
+    # 現在の時刻を使用してユニークな値を作成
+    local TIMESTAMP=$(date +%Y%m%d%H%M%S)
+    local CITY_NAME="TestCity$TIMESTAMP"
+
+    # セカンドDBに新しい行を挿入
+    mysql -h localhost -P $second_port -u $DB_USERNAME -p$DB_PASSWORD --protocol=TCP -e "INSERT INTO world.city (Name, CountryCode, District, Population) VALUES ('$CITY_NAME', 'JPN', 'Test District', 12345);"
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}新しい行の挿入に失敗しました${NC}"
+        return 1
+    fi
+
+    # 少し待機してレプリケーションが行われるのを待つ
+    echo -e "${BLUE}レプリケーションが完了するまで10秒待機中...${NC}"
+    sleep 10
+
+    # マスターDBで挿入された行を確認
+    local MASTER_DB_CHECK=$(mysql -h localhost -P $master_port -u $DB_USERNAME -p$DB_PASSWORD --protocol=TCP -e "SELECT COUNT(*) FROM world.city WHERE Name = '$CITY_NAME';" -s)
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}マスターDBでの確認に失敗しました${NC}"
+        return 1
+    fi
+
+    if [ "$MASTER_DB_CHECK" -eq "1" ]; then
+        echo -e "${GREEN}✅ 継続的なレプリケーションが正常に機能しています。挿入された行がマスターDBに複製されました。${NC}"
+    else
+        echo -e "${RED}❌ 継続的なレプリケーションに問題があります。挿入された行がマスターDBに複製されていません。${NC}"
+        all_match=false
+    fi
+
+    echo ""
+    if [ "$all_match" = true ]; then
+        echo -e "${GREEN}レプリケーション検証が完了しました。すべてのテストに合格しました！${NC}"
+        echo -e "${GREEN}・world データベースは正常にレプリケーションされています${NC}"
+        echo -e "${GREEN}・worldnonrepl データベースはレプリケーションされていません（期待通り）${NC}"
+    else
+        echo -e "${YELLOW}レプリケーション検証が完了しましたが、一部のテストに失敗しました。${NC}"
+        echo -e "${YELLOW}DMSタスクのステータスを確認してください: ${NC}./run.sh status-dms"
+    fi
+}
+
+# DMSスタックを削除
+function delete_dms_stack {
+    # DMSスタックが存在するか確認
+    if ! aws cloudformation describe-stacks --stack-name $DMS_STACK_NAME &>/dev/null; then
+        echo -e "${RED}エラー: DMSスタック '$DMS_STACK_NAME' が存在しません${NC}"
+        return 1
+    fi
+
+    echo -e "${BLUE}DMSレプリケーションスタックを削除します...${NC}"
+    echo -e "${YELLOW}警告: この操作は取り消せません。DMSレプリケーションリソースがすべて削除されます。${NC}"
+    read -p "続行しますか？ (y/n): " confirm
+    if [ "$confirm" != "y" ]; then
+        echo -e "${BLUE}操作をキャンセルしました${NC}"
+        return 0
+    fi
+
+    # DMSスタックを削除
+    aws cloudformation delete-stack --stack-name $DMS_STACK_NAME
+
+    echo -e "${BLUE}DMSレプリケーションスタックの削除を開始しました${NC}"
+    echo -e "${BLUE}削除の進行状況を確認するには以下のコマンドを実行してください:${NC}"
+    echo -e "  aws cloudformation describe-stacks --stack-name $DMS_STACK_NAME"
+    echo -e "${YELLOW}注意: スタックが完全に削除されるまでに数分かかる場合があります${NC}"
+}
+
 # メイン処理
 if [ $# -eq 0 ]; then
     show_help
@@ -702,8 +1065,14 @@ case $command in
     port-forward-second)
         port_forward_second "$@"
         ;;
+    prepare-sample-data)
+        prepare_sample_data
+        ;;
     import-sample-db)
         import_sample_db_local "$@"
+        ;;
+    verify-replication)
+        verify_replication_local "$@"
         ;;
     deploy-dms)
         deploy_dms_stack "$@"
@@ -719,6 +1088,9 @@ case $command in
         ;;
     restart-dms)
         manage_dms_task "restart"
+        ;;
+    delete-dms)
+        delete_dms_stack
         ;;
     help)
         show_help
