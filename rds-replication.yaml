@@ -1,0 +1,449 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'RDSレプリケーション検証環境 - Aurora MySQL構成'
+
+Parameters:
+  MasterDBName:
+    Type: String
+    Default: hogedb
+    Description: マスターデータベース名
+
+  SecondDBName:
+    Type: String
+    Default: fugadb
+    Description: 2つ目のRDSインスタンス上のデータベース名
+
+  DBInstanceClass:
+    Type: String
+    Default: db.t3.medium
+    Description: DBインスタンスクラス
+
+  DBUsername:
+    Type: String
+    Default: admin
+    Description: データベース管理者ユーザー名
+
+  DBPassword:
+    Type: String
+    NoEcho: true
+    Description: データベース管理者パスワード
+
+  EC2InstanceType:
+    Type: String
+    Default: t3.micro
+    Description: 踏み台サーバーのインスタンスタイプ
+
+  LatestAmiId:
+    Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
+    Default: '/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2'
+    Description: 最新のAmazon Linux 2 AMI ID
+
+Resources:
+  # VPC - RDSインスタンスを配置するための仮想ネットワーク
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: RDS-Replication-VPC
+
+  # パブリックサブネット1 - インターネットからアクセス可能なサブネット（AZ1）
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: Public-Subnet-1
+
+  # パブリックサブネット2 - インターネットからアクセス可能なサブネット（AZ2）
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.2.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: Public-Subnet-2
+
+  # プライベートサブネット1 - RDSを配置するプライベートサブネット（AZ1）
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.3.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: Private-Subnet-1
+
+  # プライベートサブネット2 - RDSを配置するプライベートサブネット（AZ2）
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.4.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: Private-Subnet-2
+
+  # インターネットゲートウェイ - VPCをインターネットに接続するためのゲートウェイ
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: RDS-IGW
+
+  # インターネットゲートウェイアタッチメント - IGWをVPCに接続
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  # パブリックルートテーブル - パブリックサブネットのルーティング設定
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: Public-Route-Table
+
+  # パブリックルート - インターネットへのルート設定
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  # パブリックサブネット1とルートテーブルの関連付け
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+
+  # パブリックサブネット2とルートテーブルの関連付け
+  PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref PublicRouteTable
+
+  # SSM接続用のVPCエンドポイント
+  SSMEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPC
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.ssm'
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      SecurityGroupIds:
+        - !Ref SSMSecurityGroup
+
+  SSMMessagesEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPC
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.ssmmessages'
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      SecurityGroupIds:
+        - !Ref SSMSecurityGroup
+
+  EC2MessagesEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPC
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.ec2messages'
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      SecurityGroupIds:
+        - !Ref SSMSecurityGroup
+
+  # SSMエンドポイント用のセキュリティグループ
+  SSMSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for SSM endpoints
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 10.0.0.0/16
+      Tags:
+        - Key: Name
+          Value: SSM-Endpoint-SG
+
+  # EC2インスタンス用のセキュリティグループ
+  EC2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for EC2 bastion host
+      VpcId: !Ref VPC
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: EC2-Bastion-SG
+
+  # EC2インスタンス用のIAMロール
+  EC2InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: CloudFormationReadAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - cloudformation:DescribeStacks
+                  - ec2:DescribeTags
+                Resource: '*'
+      Tags:
+        - Key: Name
+          Value: EC2-SSM-Role
+
+  # EC2インスタンスプロファイル
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref EC2InstanceRole
+
+  # 踏み台サーバー用のEC2インスタンス
+  BastionEC2Instance:
+    Type: AWS::EC2::Instance
+    DependsOn:
+      - MasterDBInstance
+      - SecondDBInstance
+    Properties:
+      InstanceType: !Ref EC2InstanceType
+      ImageId: !Ref LatestAmiId
+      SubnetId: !Ref PrivateSubnet1
+      SecurityGroupIds:
+        - !Ref EC2SecurityGroup
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe
+          yum update -y
+          yum install -y mysql jq awscli
+
+          # SSMパラメータストアからDB接続情報を取得するヘルパー関数
+          function get_db_info() {
+            # CloudFormationスタック名を取得
+            TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+            INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
+            REGION=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/placement/region)
+
+            # スタック名を取得
+            STACK_NAME=$(aws ec2 describe-tags --region $REGION --filters "Name=resource-id,Values=$INSTANCE_ID" "Name=key,Values=aws:cloudformation:stack-name" --query "Tags[0].Value" --output text)
+
+            # スタックの出力から情報を取得
+            aws cloudformation describe-stacks --region $REGION --stack-name $STACK_NAME --query "$1" --output text
+          }
+
+          # ホームディレクトリに接続情報を保存
+          mkdir -p /home/ec2-user/db-scripts
+
+          # 接続情報をファイルに保存
+          echo "# DB接続情報" > /home/ec2-user/db-scripts/db_info.txt
+          echo "マスターDB: ${MasterDBCluster.Endpoint.Address}" >> /home/ec2-user/db-scripts/db_info.txt
+          echo "セカンドDB: ${SecondDBCluster.Endpoint.Address}" >> /home/ec2-user/db-scripts/db_info.txt
+          echo "ユーザー名: ${DBUsername}" >> /home/ec2-user/db-scripts/db_info.txt
+          echo "マスターDB名: ${MasterDBName}" >> /home/ec2-user/db-scripts/db_info.txt
+          echo "セカンドDB名: ${SecondDBName}" >> /home/ec2-user/db-scripts/db_info.txt
+
+          # マスターDB接続用スクリプト
+          cat > /home/ec2-user/db-scripts/connect_master_db.sh << EOF
+          #!/bin/bash
+          # 動的にエンドポイントを取得
+          MASTER_ENDPOINT=\$(aws cloudformation describe-stacks --stack-name \$(aws ec2 describe-tags --filters "Name=resource-id,Values=\$(curl -s http://169.254.169.254/latest/meta-data/instance-id)" "Name=key,Values=aws:cloudformation:stack-name" --query "Tags[0].Value" --output text) --query "Stacks[0].Outputs[?OutputKey=='MasterDBEndpoint'].OutputValue" --output text)
+
+          echo "接続先: \$MASTER_ENDPOINT"
+          mysql -h \$MASTER_ENDPOINT -u ${DBUsername} -p ${MasterDBName}
+          EOF
+
+          # セカンドDB接続用スクリプト
+          cat > /home/ec2-user/db-scripts/connect_second_db.sh << EOF
+          #!/bin/bash
+          # 動的にエンドポイントを取得
+          SECOND_ENDPOINT=\$(aws cloudformation describe-stacks --stack-name \$(aws ec2 describe-tags --filters "Name=resource-id,Values=\$(curl -s http://169.254.169.254/latest/meta-data/instance-id)" "Name=key,Values=aws:cloudformation:stack-name" --query "Tags[0].Value" --output text) --query "Stacks[0].Outputs[?OutputKey=='SecondDBEndpoint'].OutputValue" --output text)
+
+          echo "接続先: \$SECOND_ENDPOINT"
+          mysql -h \$SECOND_ENDPOINT -u ${DBUsername} -p ${SecondDBName}
+          EOF
+
+          # 適切なパーミッションを設定
+          chmod +x /home/ec2-user/db-scripts/connect_master_db.sh
+          chmod +x /home/ec2-user/db-scripts/connect_second_db.sh
+          chmod 640 /home/ec2-user/db-scripts/db_info.txt
+          chown -R ec2-user:ec2-user /home/ec2-user/db-scripts
+
+          # 便利なエイリアスを設定
+          echo "alias connect-master='/home/ec2-user/db-scripts/connect_master_db.sh'" >> /home/ec2-user/.bashrc
+          echo "alias connect-second='/home/ec2-user/db-scripts/connect_second_db.sh'" >> /home/ec2-user/.bashrc
+
+          echo "EC2 bastion host setup complete" > /home/ec2-user/setup_complete
+      Tags:
+        - Key: Name
+          Value: RDS-Bastion-Host
+
+  # DBセキュリティグループ - RDSインスタンスのセキュリティ設定
+  DBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for RDS instances
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          CidrIp: 10.0.0.0/16
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          Description: Allow MySQL access from EC2 instances
+          SourceSecurityGroupId: !Ref EC2SecurityGroup
+      Tags:
+        - Key: Name
+          Value: RDS-Security-Group
+
+  # RDS用のサブネットグループ - RDSをマルチAZに配置するためのサブネットグループ
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Subnet group for RDS instances
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      Tags:
+        - Key: Name
+          Value: RDS-Subnet-Group
+
+  # マスターDBクラスター - hogedbデータベースを持つAuroraクラスター
+  MasterDBCluster:
+    Type: AWS::RDS::DBCluster
+    Properties:
+      Engine: aurora-mysql
+      EngineVersion: 8.0.mysql_aurora.3.08.1
+      DatabaseName: !Ref MasterDBName
+      MasterUsername: !Ref DBUsername
+      MasterUserPassword: !Ref DBPassword
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VpcSecurityGroupIds:
+        - !Ref DBSecurityGroup
+      BackupRetentionPeriod: 7
+      Tags:
+        - Key: Name
+          Value: RDS1-Master-Cluster
+
+  # マスターDBインスタンス (RDS1) - hogedbデータベースを持つマスターインスタンス
+  MasterDBInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceIdentifier: rds1-master
+      DBInstanceClass: !Ref DBInstanceClass
+      Engine: aurora-mysql
+      EngineVersion: 8.0.mysql_aurora.3.08.1
+      DBClusterIdentifier: !Ref MasterDBCluster
+      PubliclyAccessible: false
+      Tags:
+        - Key: Name
+          Value: RDS1-Master
+
+  # 2つ目のDBクラスター - fugadbデータベースを持つAuroraクラスター
+  SecondDBCluster:
+    Type: AWS::RDS::DBCluster
+    Properties:
+      Engine: aurora-mysql
+      EngineVersion: 8.0.mysql_aurora.3.08.1
+      DatabaseName: !Ref SecondDBName
+      MasterUsername: !Ref DBUsername
+      MasterUserPassword: !Ref DBPassword
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VpcSecurityGroupIds:
+        - !Ref DBSecurityGroup
+      BackupRetentionPeriod: 7
+      Tags:
+        - Key: Name
+          Value: RDS2-Second-Cluster
+
+  # 2つ目のDBインスタンス (RDS2) - fugadbデータベースを持つ独立したインスタンス
+  SecondDBInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceIdentifier: rds2-second
+      DBInstanceClass: !Ref DBInstanceClass
+      Engine: aurora-mysql
+      EngineVersion: 8.0.mysql_aurora.3.08.1
+      DBClusterIdentifier: !Ref SecondDBCluster
+      PubliclyAccessible: false
+      Tags:
+        - Key: Name
+          Value: RDS2-Second
+
+Outputs:
+  # マスターDBのエンドポイント - RDS1への接続情報
+  MasterDBEndpoint:
+    Description: マスターDBのエンドポイント
+    Value: !GetAtt MasterDBCluster.Endpoint.Address
+
+  # マスターDBのリードエンドポイント
+  MasterDBReadEndpoint:
+    Description: マスターDBのリードエンドポイント
+    Value: !GetAtt MasterDBCluster.ReadEndpoint.Address
+
+  # 2つ目のDBのエンドポイント - RDS2への接続情報
+  SecondDBEndpoint:
+    Description: 2つ目のDBのエンドポイント
+    Value: !GetAtt SecondDBCluster.Endpoint.Address
+
+  # 2つ目のDBのリードエンドポイント
+  SecondDBReadEndpoint:
+    Description: 2つ目のDBのリードエンドポイント
+    Value: !GetAtt SecondDBCluster.ReadEndpoint.Address
+
+  # 踏み台サーバーのID
+  BastionInstanceId:
+    Description: 踏み台サーバーのインスタンスID
+    Value: !Ref BastionEC2Instance
+
+  # SSM接続コマンド
+  SSMConnectCommand:
+    Description: SSMを使用して踏み台サーバーに接続するコマンド
+    Value: !Sub "aws ssm start-session --target ${BastionEC2Instance}"
