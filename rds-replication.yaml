@@ -27,6 +27,16 @@ Parameters:
     NoEcho: true
     Description: データベース管理者パスワード
 
+  EC2InstanceType:
+    Type: String
+    Default: t3.micro
+    Description: 踏み台サーバーのインスタンスタイプ
+
+  LatestAmiId:
+    Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
+    Default: '/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2'
+    Description: 最新のAmazon Linux 2 AMI ID
+
 Resources:
   # VPC - RDSインスタンスを配置するための仮想ネットワーク
   VPC:
@@ -132,6 +142,146 @@ Resources:
       SubnetId: !Ref PublicSubnet2
       RouteTableId: !Ref PublicRouteTable
 
+  # SSM接続用のVPCエンドポイント
+  SSMEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPC
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.ssm'
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      SecurityGroupIds:
+        - !Ref SSMSecurityGroup
+
+  SSMMessagesEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPC
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.ssmmessages'
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      SecurityGroupIds:
+        - !Ref SSMSecurityGroup
+
+  EC2MessagesEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPC
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.ec2messages'
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      SecurityGroupIds:
+        - !Ref SSMSecurityGroup
+
+  # SSMエンドポイント用のセキュリティグループ
+  SSMSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for SSM endpoints
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 10.0.0.0/16
+      Tags:
+        - Key: Name
+          Value: SSM-Endpoint-SG
+
+  # EC2インスタンス用のセキュリティグループ
+  EC2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for EC2 bastion host
+      VpcId: !Ref VPC
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: EC2-Bastion-SG
+
+  # EC2インスタンス用のIAMロール
+  EC2InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Tags:
+        - Key: Name
+          Value: EC2-SSM-Role
+
+  # EC2インスタンスプロファイル
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref EC2InstanceRole
+
+  # 踏み台サーバー用のEC2インスタンス
+  BastionEC2Instance:
+    Type: AWS::EC2::Instance
+    DependsOn:
+      - MasterDBInstance
+      - SecondDBInstance
+    Properties:
+      InstanceType: !Ref EC2InstanceType
+      ImageId: !Ref LatestAmiId
+      SubnetId: !Ref PrivateSubnet1
+      SecurityGroupIds:
+        - !Ref EC2SecurityGroup
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe
+          yum update -y
+          yum install -y mysql
+
+          # 接続情報をファイルに保存
+          echo "# DB接続情報" > /tmp/db_info.txt
+          echo "マスターDB: ${MasterDBCluster.Endpoint.Address}" >> /tmp/db_info.txt
+          echo "セカンドDB: ${SecondDBCluster.Endpoint.Address}" >> /tmp/db_info.txt
+          echo "ユーザー名: ${DBUsername}" >> /tmp/db_info.txt
+          echo "マスターDB名: ${MasterDBName}" >> /tmp/db_info.txt
+          echo "セカンドDB名: ${SecondDBName}" >> /tmp/db_info.txt
+
+          # マスターDB接続用スクリプト
+          cat > /tmp/connect_master_db.sh << EOF
+          #!/bin/bash
+          mysql -h ${MasterDBCluster.Endpoint.Address} -u ${DBUsername} -p ${MasterDBName}
+          EOF
+
+          # セカンドDB接続用スクリプト
+          cat > /tmp/connect_second_db.sh << EOF
+          #!/bin/bash
+          mysql -h ${SecondDBCluster.Endpoint.Address} -u ${DBUsername} -p ${SecondDBName}
+          EOF
+
+          chmod +x /tmp/connect_master_db.sh
+          chmod +x /tmp/connect_second_db.sh
+          chmod 777 /tmp/db_info.txt /tmp/connect_master_db.sh /tmp/connect_second_db.sh
+
+          echo "EC2 bastion host setup complete" > /tmp/setup_complete
+      Tags:
+        - Key: Name
+          Value: RDS-Bastion-Host
+
   # DBセキュリティグループ - RDSインスタンスのセキュリティ設定
   DBSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -143,6 +293,11 @@ Resources:
           FromPort: 3306
           ToPort: 3306
           CidrIp: 10.0.0.0/16
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          Description: Allow MySQL access from EC2 instances
+          SourceSecurityGroupId: !Ref EC2SecurityGroup
       Tags:
         - Key: Name
           Value: RDS-Security-Group
@@ -241,3 +396,13 @@ Outputs:
   SecondDBReadEndpoint:
     Description: 2つ目のDBのリードエンドポイント
     Value: !GetAtt SecondDBCluster.ReadEndpoint.Address
+
+  # 踏み台サーバーのID
+  BastionInstanceId:
+    Description: 踏み台サーバーのインスタンスID
+    Value: !Ref BastionEC2Instance
+
+  # SSM接続コマンド
+  SSMConnectCommand:
+    Description: SSMを使用して踏み台サーバーに接続するコマンド
+    Value: !Sub "aws ssm start-session --target ${BastionEC2Instance}"
