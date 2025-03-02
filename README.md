@@ -55,8 +55,8 @@ graph TD
 
 このソリューションは以下の2つのCloudFormationスタックで構成されています：
 
-1. **rds-replication.yaml** - 基本的なAurora MySQL環境（マスターDBとセカンドDB）を構築
-2. **dms-replication.yaml** - DMSレプリケーションを設定し、セカンドDBからマスターDBへのレプリケーションを構成
+1. **templates/rds-replication.yaml** - 基本的なAurora MySQL環境（マスターDBとセカンドDB）を構築
+2. **templates/dms-replication.yaml** - DMSレプリケーションを設定し、セカンドDBからマスターDBへのレプリケーションを構成
 
 ## クイックスタート
 
@@ -64,7 +64,7 @@ graph TD
 
 ```bash
 aws cloudformation deploy \
-  --template-file rds-replication.yaml \
+  --template-file templates/rds-replication.yaml \
   --stack-name aurora-mysql-env \
   --parameter-overrides \
     DBUsername=admin \
@@ -83,15 +83,15 @@ aws cloudformation deploy \
 aws ssm start-session --target $(aws cloudformation describe-stacks --stack-name aurora-mysql-env --query "Stacks[0].Outputs[?OutputKey=='BastionInstanceId'].OutputValue" --output text)
 
 # 踏み台サーバー上で以下を実行
-chmod +x import_sample_db.sh
-./import_sample_db.sh aurora-mysql-env
+chmod +x scripts/import_sample_db.sh
+./scripts/import_sample_db.sh aurora-mysql-env
 ```
 
 ### ステップ3: DMSレプリケーションをデプロイ
 
 ```bash
 aws cloudformation deploy \
-  --template-file dms-replication.yaml \
+  --template-file templates/dms-replication.yaml \
   --stack-name dms-replication \
   --parameter-overrides \
     ExistingStackName=aurora-mysql-env \
@@ -107,8 +107,8 @@ aws cloudformation deploy \
 
 ```bash
 # 踏み台サーバー上で以下を実行
-chmod +x verify_replication.sh
-./verify_replication.sh aurora-mysql-env
+chmod +x scripts/verify_replication.sh
+./scripts/verify_replication.sh aurora-mysql-env
 ```
 
 詳細な手順については、[デプロイガイド](doc/deployment-guide.md)を参照してください。
@@ -124,9 +124,9 @@ chmod +x verify_replication.sh
 
 このリポジトリには以下のヘルパースクリプトが含まれています：
 
-1. **import_sample_db.sh** - サンプルデータベース（WorldとEmployees）をセカンドDBにインポートし、マスターDBに空のWorldデータベースを作成
-2. **verify_replication.sh** - レプリケーションが正常に機能しているかを検証
-3. **manage_dms_task.sh** - DMSタスクの管理（開始、停止、ステータス確認、再起動）
+1. **scripts/import_sample_db.sh** - サンプルデータベース（WorldとEmployees）をセカンドDBにインポートし、マスターDBに空のWorldデータベースを作成
+2. **scripts/verify_replication.sh** - レプリケーションが正常に機能しているかを検証
+3. **scripts/manage_dms_task.sh** - DMSタスクの管理（開始、停止、ステータス確認、再起動）
 
 スクリプトの詳細については、[ヘルパースクリプト](doc/helper-scripts.md)を参照してください。
 
@@ -136,16 +136,16 @@ DMSタスクを管理するには、以下のコマンドを使用します：
 
 ```bash
 # タスクのステータスを確認
-./manage_dms_task.sh dms-replication status
+./scripts/manage_dms_task.sh dms-replication status
 
 # タスクを停止
-./manage_dms_task.sh dms-replication stop
+./scripts/manage_dms_task.sh dms-replication stop
 
 # タスクを開始
-./manage_dms_task.sh dms-replication start
+./scripts/manage_dms_task.sh dms-replication start
 
 # タスクを再起動
-./manage_dms_task.sh dms-replication restart
+./scripts/manage_dms_task.sh dms-replication restart
 ```
 
 ## 注意事項

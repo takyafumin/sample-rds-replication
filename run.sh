@@ -9,7 +9,7 @@ NC='\033[0m' # No Color
 
 # 設定
 STACK_NAME="rds-replication-stack"
-TEMPLATE_FILE="rds-replication.yaml"
+TEMPLATE_FILE="templates/rds-replication.yaml"
 REGION=$(aws configure get region)
 if [ -z "$REGION" ]; then
     REGION="ap-northeast-1" # デフォルトリージョン
