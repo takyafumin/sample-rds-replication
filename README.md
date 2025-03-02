@@ -172,3 +172,124 @@ aws cloudformation delete-stack --stack-name rds-replication-stack
 ## ライセンス
 
 ## 連絡先
+
+## SSMポートフォワーディングを使用したRDSへの接続
+
+SSMポートフォワーディングを使用すると、ローカルマシンから直接RDSインスタンスに接続できます。これにより、踏み台サーバーにログインせずにRDSにアクセスできます。
+
+### 前提条件
+
+- AWS CLIがインストールされていること
+- AWS Session Managerプラグインがインストールされていること
+  ```bash
+  # macOSの場合
+  brew install --cask session-manager-plugin
+
+  # Amazon Linux/RHEL/CentOSの場合
+  curl "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/linux_64bit/session-manager-plugin.rpm" -o "session-manager-plugin.rpm"
+  sudo yum install -y session-manager-plugin.rpm
+
+  # Ubuntuの場合
+  curl "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb" -o "session-manager-plugin.deb"
+  sudo dpkg -i session-manager-plugin.deb
+
+  # Windowsの場合
+  # https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html からインストーラーをダウンロード
+  ```
+
+### ポートフォワーディングの設定
+
+1. EC2インスタンスIDを取得します：
+
+```bash
+aws cloudformation describe-stacks \
+  --stack-name rds-replication-stack \
+  --query "Stacks[0].Outputs[?OutputKey=='BastionInstanceId'].OutputValue" \
+  --output text
+```
+
+2. RDSエンドポイントを取得します：
+
+```bash
+# マスターDBエンドポイント
+aws cloudformation describe-stacks \
+  --stack-name rds-replication-stack \
+  --query "Stacks[0].Outputs[?OutputKey=='MasterDBEndpoint'].OutputValue" \
+  --output text
+
+# セカンドDBエンドポイント
+aws cloudformation describe-stacks \
+  --stack-name rds-replication-stack \
+  --query "Stacks[0].Outputs[?OutputKey=='SecondDBEndpoint'].OutputValue" \
+  --output text
+```
+
+3. SSMポートフォワーディングを開始します：
+
+```bash
+# マスターDBへのポートフォワーディング（ローカルポート3306をRDSの3306に転送）
+aws ssm start-session \
+  --target インスタンスID \
+  --document-name AWS-StartPortForwardingSessionToRemoteHost \
+  --parameters '{"host":["マスターDBエンドポイント"],"portNumber":["3306"], "localPortNumber":["3306"]}'
+
+# セカンドDBへのポートフォワーディング（ローカルポート3307をRDSの3306に転送）
+aws ssm start-session \
+  --target インスタンスID \
+  --document-name AWS-StartPortForwardingSessionToRemoteHost \
+  --parameters '{"host":["セカンドDBエンドポイント"],"portNumber":["3306"], "localPortNumber":["3307"]}'
+```
+
+注意: ローカルの3306ポートが既に使用されている場合は、別のポート（例：13306）を指定してください。
+
+### 具体的なコマンド例
+
+以下は、このプロジェクトのCloudFormationスタックがデプロイされている場合の具体的なコマンド例です：
+
+```bash
+# マスターDBへのポートフォワーディング
+aws ssm start-session \
+  --target i-0c260e5025fe80a03 \
+  --document-name AWS-StartPortForwardingSessionToRemoteHost \
+  --parameters '{"host":["rds-replication-stack-masterdbcluster-gnsrcbaxedjc.cluster-chopxyypdptr.ap-northeast-1.rds.amazonaws.com"],"portNumber":["3306"], "localPortNumber":["3306"]}'
+
+# セカンドDBへのポートフォワーディング
+aws ssm start-session \
+  --target i-0c260e5025fe80a03 \
+  --document-name AWS-StartPortForwardingSessionToRemoteHost \
+  --parameters '{"host":["rds-replication-stack-seconddbcluster-pi2iozlfbgyh.cluster-chopxyypdptr.ap-northeast-1.rds.amazonaws.com"],"portNumber":["3306"], "localPortNumber":["3307"]}'
+```
+
+ポートフォワーディングが確立されたら、別のターミナルウィンドウで以下のコマンドを実行してRDSに接続できます：
+
+```bash
+# マスターDBへの接続
+mysql -h 127.0.0.1 -P 3306 -u admin -p hogedb
+
+# セカンドDBへの接続
+mysql -h 127.0.0.1 -P 3307 -u admin -p fugadb
+```
+
+4. 別のターミナルウィンドウで、ローカルホストを通じてRDSに接続します：
+
+```bash
+# マスターDBへの接続（ローカルポート3306経由）
+mysql -h 127.0.0.1 -P 3306 -u admin -p hogedb
+
+# セカンドDBへの接続（ローカルポート3307経由）
+mysql -h 127.0.0.1 -P 3307 -u admin -p fugadb
+```
+
+### ポートフォワーディングの終了
+
+ポートフォワーディングを終了するには、セッションを実行しているターミナルで `Ctrl+C` を押します。
+
+### トラブルシューティング
+
+1. **接続エラー**: EC2インスタンスがRDSエンドポイントに到達できることを確認してください。セキュリティグループの設定を確認します。
+
+2. **権限エラー**: AWS CLIの認証情報と、SSMセッションマネージャーを使用するための適切なIAM権限があることを確認してください。
+
+3. **ポートの競合**: ローカルポートが既に使用されている場合は、別のポート番号を指定してください。
+
+4. **Session Managerプラグインのエラー**: プラグインが正しくインストールされていることを確認してください。
