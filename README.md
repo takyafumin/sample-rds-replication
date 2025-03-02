@@ -12,16 +12,16 @@ graph TD
         end
 
         subgraph "プライベートサブネット"
-            DMS["DMSレプリケーション\nインスタンス"]
+            DMS["DMSレプリケーション<br>インスタンス"]
 
             subgraph "マスターDBクラスター"
-                MasterDB["Aurora MySQL\n(ターゲット)"]
-                MasterDBR["Aurora MySQL\nレプリカ"]
+                MasterDB["Aurora MySQL<br>(ターゲット)"]
+                MasterDBR["Aurora MySQL<br>レプリカ"]
             end
 
             subgraph "セカンドDBクラスター"
-                SecondDB["Aurora MySQL\n(ソース)"]
-                SecondDBR["Aurora MySQL\nレプリカ"]
+                SecondDB["Aurora MySQL<br>(ソース)"]
+                SecondDBR["Aurora MySQL<br>レプリカ"]
             end
         end
     end
@@ -30,8 +30,8 @@ graph TD
     EC2 -->|管理| MasterDB
     EC2 -->|管理| SecondDB
 
-    SecondDB -->|ソース\nエンドポイント| DMS
-    DMS -->|ターゲット\nエンドポイント| MasterDB
+    SecondDB -->|ソース<br>エンドポイント| DMS
+    DMS -->|ターゲット<br>エンドポイント| MasterDB
 
     SecondDB -->|レプリケーション| SecondDBR
     MasterDB -->|レプリケーション| MasterDBR
