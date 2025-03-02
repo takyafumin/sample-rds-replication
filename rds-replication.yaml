@@ -27,6 +27,12 @@ Parameters:
     NoEcho: true
     Description: データベース管理者パスワード
 
+  UseCustomKMSKey:
+    Type: String
+    Default: true
+    AllowedValues: [true, false]
+    Description: カスタムKMSキーを使用するかどうか（true/false）
+
   EC2InstanceType:
     Type: String
     Default: t3.micro
@@ -36,6 +42,9 @@ Parameters:
     Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
     Default: '/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2'
     Description: 最新のAmazon Linux 2 AMI ID
+
+Conditions:
+  CreateCustomKMSKey: !Equals [!Ref UseCustomKMSKey, 'true']
 
 Resources:
   # VPC - RDSインスタンスを配置するための仮想ネットワーク
@@ -355,6 +364,47 @@ Resources:
         - Key: Name
           Value: RDS-Subnet-Group
 
+  # RDS暗号化用のKMSキー
+  RDSEncryptionKey:
+    Type: AWS::KMS::Key
+    Condition: CreateCustomKMSKey
+    Properties:
+      Description: KMS key for RDS encryption
+      Enabled: true
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: '2012-10-17'
+        Id: key-default-1
+        Statement:
+          - Sid: Enable IAM User Permissions
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: 'kms:*'
+            Resource: '*'
+          - Sid: Allow use of the key for RDS
+            Effect: Allow
+            Principal:
+              Service: 'rds.amazonaws.com'
+            Action:
+              - 'kms:Encrypt'
+              - 'kms:Decrypt'
+              - 'kms:ReEncrypt*'
+              - 'kms:GenerateDataKey*'
+              - 'kms:DescribeKey'
+            Resource: '*'
+      Tags:
+        - Key: Name
+          Value: RDS-Encryption-Key
+
+  # KMSキーのエイリアス
+  RDSEncryptionKeyAlias:
+    Type: AWS::KMS::Alias
+    Condition: CreateCustomKMSKey
+    Properties:
+      AliasName: !Sub 'alias/${AWS::StackName}-rds-key'
+      TargetKeyId: !Ref RDSEncryptionKey
+
   # マスターDBクラスター - hogedbデータベースを持つAuroraクラスター
   MasterDBCluster:
     Type: AWS::RDS::DBCluster
@@ -368,6 +418,12 @@ Resources:
       VpcSecurityGroupIds:
         - !Ref DBSecurityGroup
       BackupRetentionPeriod: 7
+      StorageEncrypted: true
+      KmsKeyId:
+        Fn::If:
+          - CreateCustomKMSKey
+          - !GetAtt RDSEncryptionKey.Arn
+          - !Ref 'AWS::NoValue'
       Tags:
         - Key: Name
           Value: RDS1-Master-Cluster
@@ -399,6 +455,12 @@ Resources:
       VpcSecurityGroupIds:
         - !Ref DBSecurityGroup
       BackupRetentionPeriod: 7
+      StorageEncrypted: true
+      KmsKeyId:
+        Fn::If:
+          - CreateCustomKMSKey
+          - !GetAtt RDSEncryptionKey.Arn
+          - !Ref 'AWS::NoValue'
       Tags:
         - Key: Name
           Value: RDS2-Second-Cluster
