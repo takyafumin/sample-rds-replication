@@ -1,6 +1,6 @@
 # デプロイガイド
 
-このガイドでは、AWS DMSを使用したAurora MySQL間のレプリケーション環境を構築する手順を詳しく説明します。
+このガイドでは、AWS DMSを使用したAurora MySQL間のレプリケーション環境を構築する手順を詳しく説明します。AWS コマンドに詳しくない方でも簡単に環境を構築できるよう、`run.sh` スクリプトを使用した手順を紹介します。
 
 ## 前提条件
 
@@ -16,15 +16,7 @@
 まず、2つのAurora MySQLクラスターと踏み台サーバーを含む基本的な環境をデプロイします。
 
 ```bash
-aws cloudformation deploy \
-  --template-file rds-replication.yaml \
-  --stack-name aurora-mysql-env \
-  --parameter-overrides \
-    DBUsername=admin \
-    DBPassword=YourStrongPassword \
-    MasterDBName=hogedb \
-    SecondDBName=fugadb \
-  --capabilities CAPABILITY_IAM
+./run.sh deploy --db-password YourStrongPassword
 ```
 
 このコマンドは以下のリソースをデプロイします：
@@ -33,7 +25,11 @@ aws cloudformation deploy \
 - 踏み台サーバー用のEC2インスタンス
 - 必要なセキュリティグループとIAMロール
 
-デプロイには約15〜20分かかります。
+デプロイには約15〜20分かかります。デプロイの進行状況は以下のコマンドで確認できます：
+
+```bash
+./run.sh status
+```
 
 ### ステップ2: サンプルデータベースをインポート
 
@@ -42,20 +38,17 @@ aws cloudformation deploy \
 1. 踏み台サーバーに接続：
 
 ```bash
-aws ssm start-session --target $(aws cloudformation describe-stacks --stack-name aurora-mysql-env --query "Stacks[0].Outputs[?OutputKey=='BastionInstanceId'].OutputValue" --output text)
+./run.sh connect-ec2
 ```
 
-2. 踏み台サーバー上でスクリプトをダウンロードまたはコピー：
+2. 踏み台サーバー上でスクリプトを実行：
 
 ```bash
 # スクリプトがすでにサーバー上にある場合は、実行権限を付与
-chmod +x import_sample_db.sh
-```
+chmod +x scripts/import_sample_db.sh
 
-3. サンプルデータベースをインポート：
-
-```bash
-./import_sample_db.sh aurora-mysql-env
+# サンプルデータベースをインポート
+./scripts/import_sample_db.sh rds-replication-stack
 ```
 
 このスクリプトは以下の処理を行います：
@@ -68,15 +61,7 @@ chmod +x import_sample_db.sh
 サンプルデータベースのインポートが完了したら、DMSレプリケーションをデプロイします。
 
 ```bash
-aws cloudformation deploy \
-  --template-file dms-replication.yaml \
-  --stack-name dms-replication \
-  --parameter-overrides \
-    ExistingStackName=aurora-mysql-env \
-    DBUsername=admin \
-    DBPassword=YourStrongPassword \
-    SourceDatabaseName=world \
-  --capabilities CAPABILITY_IAM
+./run.sh deploy-dms --db-password YourStrongPassword --source-db world
 ```
 
 このコマンドは以下のリソースをデプロイします：
@@ -86,7 +71,11 @@ aws cloudformation deploy \
 - DMSレプリケーションタスク
 - 必要なIAMロールとセキュリティグループ
 
-デプロイには約10〜15分かかります。
+デプロイには約10〜15分かかります。デプロイの進行状況は以下のコマンドで確認できます：
+
+```bash
+./run.sh status-dms
+```
 
 ### ステップ4: レプリケーションを検証
 
@@ -95,14 +84,14 @@ DMSレプリケーションのデプロイが完了したら、レプリケー�
 1. 踏み台サーバーに接続（まだ接続していない場合）：
 
 ```bash
-aws ssm start-session --target $(aws cloudformation describe-stacks --stack-name aurora-mysql-env --query "Stacks[0].Outputs[?OutputKey=='BastionInstanceId'].OutputValue" --output text)
+./run.sh connect-ec2
 ```
 
 2. レプリケーションを検証：
 
 ```bash
-chmod +x verify_replication.sh
-./verify_replication.sh aurora-mysql-env
+chmod +x scripts/verify_replication.sh
+./scripts/verify_replication.sh rds-replication-stack
 ```
 
 このスクリプトは以下の検証を行います：
@@ -110,22 +99,22 @@ chmod +x verify_replication.sh
 - 各テーブルの行数を比較
 - 新しい行を挿入して継続的なレプリケーションをテスト
 
-### ステップ5: DMSタスクの管理（必要に応じて）
+### ステップ5: DMSタスクの管理
 
 DMSタスクを管理するには、以下のコマンドを使用します：
 
 ```bash
 # タスクのステータスを確認
-./manage_dms_task.sh dms-replication status
+./run.sh status-dms
 
 # タスクを停止
-./manage_dms_task.sh dms-replication stop
+./run.sh stop-dms
 
 # タスクを開始
-./manage_dms_task.sh dms-replication start
+./run.sh start-dms
 
 # タスクを再起動
-./manage_dms_task.sh dms-replication restart
+./run.sh restart-dms
 ```
 
 ## トラブルシューティング
@@ -143,19 +132,21 @@ DMSタスクを管理するには、以下のコマンドを使用します：
 DMSタスクのログを確認するには、以下のコマンドを使用します：
 
 ```bash
-aws dms describe-replication-tasks --filters Name=replication-task-arn,Values=<タスクARN> --query "ReplicationTasks[0].ReplicationTaskStats"
+./run.sh status-dms
 ```
+
+このコマンドはDMSレプリケーションタスクのステータスと統計情報を表示します。
 
 ## クリーンアップ
 
-環境を削除するには、以下の順序でスタックを削除します：
+環境を削除するには、以下の手順でスタックを削除します：
 
 ```bash
 # 1. DMSレプリケーションスタックを削除
 aws cloudformation delete-stack --stack-name dms-replication
 
 # 2. Aurora MySQL環境スタックを削除
-aws cloudformation delete-stack --stack-name aurora-mysql-env
+./run.sh delete
 ```
 
 スタックの削除には約10〜15分かかります。

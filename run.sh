@@ -10,6 +10,8 @@ NC='\033[0m' # No Color
 # 設定
 STACK_NAME="rds-replication-stack"
 TEMPLATE_FILE="templates/rds-replication.yaml"
+DMS_STACK_NAME="dms-replication"
+DMS_TEMPLATE_FILE="templates/dms-replication.yaml"
 REGION=$(aws configure get region)
 if [ -z "$REGION" ]; then
     REGION="ap-northeast-1" # デフォルトリージョン
@@ -30,18 +32,30 @@ function show_help {
     echo -e "  ${GREEN}connect-ec2${NC}         - 踏み台EC2インスタンスにSSM接続します"
     echo -e "  ${GREEN}port-forward-master${NC} - マスターDBへのポートフォワーディングを設定します"
     echo -e "  ${GREEN}port-forward-second${NC} - セカンドDBへのポートフォワーディングを設定します"
+    echo -e "  ${GREEN}deploy-dms${NC}          - DMSレプリケーションスタックをデプロイします"
+    echo -e "  ${GREEN}status-dms${NC}          - DMSレプリケーションスタックのステータスを表示します"
+    echo -e "  ${GREEN}start-dms${NC}           - DMSレプリケーションタスクを開始します"
+    echo -e "  ${GREEN}stop-dms${NC}            - DMSレプリケーションタスクを停止します"
+    echo -e "  ${GREEN}restart-dms${NC}         - DMSレプリケーションタスクを再起動します"
     echo -e "  ${GREEN}help${NC}                - このヘルプメッセージを表示します"
     echo ""
     echo -e "${YELLOW}例:${NC}"
     echo -e "  $0 ${GREEN}deploy${NC} --db-password MySecurePassword123"
     echo -e "  $0 ${GREEN}connect-ec2${NC}"
     echo -e "  $0 ${GREEN}port-forward-master${NC} --local-port 13306"
+    echo -e "  $0 ${GREEN}deploy-dms${NC} --db-password MySecurePassword123 --source-db world"
     echo ""
 }
 
 # スタックの存在確認
 function check_stack_exists {
     aws cloudformation describe-stacks --stack-name $STACK_NAME --region $REGION &> /dev/null
+    return $?
+}
+
+# DMSスタックの存在確認
+function check_dms_stack_exists {
+    aws cloudformation describe-stacks --stack-name $DMS_STACK_NAME --region $REGION &> /dev/null
     return $?
 }
 
@@ -465,13 +479,144 @@ function port_forward_second {
         --region $REGION
 }
 
+# DMSレプリケーションスタックをデプロイ
+function deploy_dms_stack {
+    local db_password=""
+    local db_username="admin"
+    local source_db_name="world"
+
+    # オプションの解析
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --db-password)
+                db_password="$2"
+                shift 2
+                ;;
+            --db-username)
+                db_username="$2"
+                shift 2
+                ;;
+            --source-db)
+                source_db_name="$2"
+                shift 2
+                ;;
+            *)
+                echo -e "${RED}エラー: 不明なオプション: $1${NC}"
+                return 1
+                ;;
+        esac
+    done
+
+    # 必須パラメータのチェック
+    if [ -z "$db_password" ]; then
+        echo -e "${RED}エラー: --db-password は必須です${NC}"
+        return 1
+    fi
+
+    # 基本スタックが存在するか確認
+    if ! check_stack_exists; then
+        echo -e "${RED}エラー: 基本スタック '$STACK_NAME' が存在しません。まず基本スタックをデプロイしてください。${NC}"
+        return 1
+    fi
+
+    echo -e "${BLUE}DMSレプリケーションスタックをデプロイしています...${NC}"
+
+    # CloudFormationスタックをデプロイ
+    aws cloudformation deploy \
+        --template-file $DMS_TEMPLATE_FILE \
+        --stack-name $DMS_STACK_NAME \
+        --parameter-overrides \
+            ExistingStackName=$STACK_NAME \
+            DBUsername=$db_username \
+            DBPassword=$db_password \
+            SourceDatabaseName=$source_db_name \
+        --capabilities CAPABILITY_IAM \
+        --region $REGION
+
+    local result=$?
+    if [ $result -eq 0 ]; then
+        echo -e "${GREEN}DMSレプリケーションスタックのデプロイが完了しました${NC}"
+    else
+        echo -e "${RED}DMSレプリケーションスタックのデプロイに失敗しました${NC}"
+    fi
+
+    return $result
+}
+
+# DMSスタックのステータスを表示
+function show_dms_status {
+    if ! check_dms_stack_exists; then
+        echo -e "${RED}エラー: DMSスタック '$DMS_STACK_NAME' が存在しません${NC}"
+        return 1
+    fi
+
+    echo -e "${BLUE}DMSレプリケーションスタックのステータス:${NC}"
+    aws cloudformation describe-stacks --stack-name $DMS_STACK_NAME --region $REGION \
+        --query "Stacks[0].StackStatus" --output text
+
+    echo -e "\n${BLUE}DMSレプリケーションタスクのステータス:${NC}"
+    local task_arn=$(aws cloudformation describe-stacks --stack-name $DMS_STACK_NAME --region $REGION \
+        --query "Stacks[0].Outputs[?OutputKey=='ReplicationTaskArn'].OutputValue" --output text)
+
+    if [ -n "$task_arn" ]; then
+        aws dms describe-replication-tasks --filters Name=replication-task-arn,Values=$task_arn \
+            --query "ReplicationTasks[0].Status" --output text --region $REGION
+
+        echo -e "\n${BLUE}レプリケーション統計:${NC}"
+        aws dms describe-replication-tasks --filters Name=replication-task-arn,Values=$task_arn \
+            --query "ReplicationTasks[0].ReplicationTaskStats" --output json --region $REGION
+    else
+        echo -e "${YELLOW}DMSレプリケーションタスクが見つかりません${NC}"
+    fi
+}
+
+# DMSタスクを管理（開始、停止、再起動）
+function manage_dms_task {
+    local action=$1
+
+    if ! check_dms_stack_exists; then
+        echo -e "${RED}エラー: DMSスタック '$DMS_STACK_NAME' が存在しません${NC}"
+        return 1
+    fi
+
+    local task_arn=$(aws cloudformation describe-stacks --stack-name $DMS_STACK_NAME --region $REGION \
+        --query "Stacks[0].Outputs[?OutputKey=='ReplicationTaskArn'].OutputValue" --output text)
+
+    if [ -z "$task_arn" ]; then
+        echo -e "${RED}エラー: DMSレプリケーションタスクが見つかりません${NC}"
+        return 1
+    fi
+
+    case $action in
+        start)
+            echo -e "${BLUE}DMSレプリケーションタスクを開始しています...${NC}"
+            aws dms start-replication-task --replication-task-arn $task_arn \
+                --start-replication-task-type start-replication --region $REGION
+            ;;
+        stop)
+            echo -e "${BLUE}DMSレプリケーションタスクを停止しています...${NC}"
+            aws dms stop-replication-task --replication-task-arn $task_arn --region $REGION
+            ;;
+        restart)
+            echo -e "${BLUE}DMSレプリケーションタスクを再起動しています...${NC}"
+            aws dms start-replication-task --replication-task-arn $task_arn \
+                --start-replication-task-type reload-target --region $REGION
+            ;;
+        *)
+            echo -e "${RED}エラー: 不明なアクション: $action${NC}"
+            return 1
+            ;;
+    esac
+
+    echo -e "${GREEN}コマンドが実行されました。タスクのステータスを確認するには './run.sh status-dms' を実行してください${NC}"
+}
+
 # メイン処理
 if [ $# -eq 0 ]; then
     show_help
     exit 0
 fi
 
-# コマンドの解析
 command=$1
 shift
 
@@ -499,6 +644,21 @@ case $command in
         ;;
     port-forward-second)
         port_forward_second "$@"
+        ;;
+    deploy-dms)
+        deploy_dms_stack "$@"
+        ;;
+    status-dms)
+        show_dms_status
+        ;;
+    start-dms)
+        manage_dms_task "start"
+        ;;
+    stop-dms)
+        manage_dms_task "stop"
+        ;;
+    restart-dms)
+        manage_dms_task "restart"
         ;;
     help)
         show_help
