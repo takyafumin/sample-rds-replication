@@ -32,6 +32,7 @@ function show_help {
     echo -e "  ${GREEN}connect-ec2${NC}         - 踏み台EC2インスタンスにSSM接続します"
     echo -e "  ${GREEN}port-forward-master${NC} - マスターDBへのポートフォワーディングを設定します"
     echo -e "  ${GREEN}port-forward-second${NC} - セカンドDBへのポートフォワーディングを設定します"
+    echo -e "  ${GREEN}import-sample-db${NC}    - ローカルからサンプルデータベースをインポートします"
     echo -e "  ${GREEN}deploy-dms${NC}          - DMSレプリケーションスタックをデプロイします"
     echo -e "  ${GREEN}status-dms${NC}          - DMSレプリケーションスタックのステータスを表示します"
     echo -e "  ${GREEN}start-dms${NC}           - DMSレプリケーションタスクを開始します"
@@ -43,6 +44,7 @@ function show_help {
     echo -e "  $0 ${GREEN}deploy${NC} --db-password MySecurePassword123"
     echo -e "  $0 ${GREEN}connect-ec2${NC}"
     echo -e "  $0 ${GREEN}port-forward-master${NC} --local-port 13306"
+    echo -e "  $0 ${GREEN}import-sample-db${NC} --master-port 13306 --second-port 13307"
     echo -e "  $0 ${GREEN}deploy-dms${NC} --db-password MySecurePassword123 --source-db world"
     echo ""
 }
@@ -64,6 +66,61 @@ function get_stack_output {
     local output_key=$1
     aws cloudformation describe-stacks --stack-name $STACK_NAME --region $REGION \
         --query "Stacks[0].Outputs[?OutputKey=='$output_key'].OutputValue" --output text
+}
+
+# ローカルからサンプルデータベースをインポート
+function import_sample_db_local {
+    local master_port=13306
+    local second_port=13307
+
+    # パラメータの解析
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --master-port)
+                master_port="$2"
+                shift 2
+                ;;
+            --second-port)
+                second_port="$2"
+                shift 2
+                ;;
+            *)
+                echo -e "${RED}エラー: 不明なオプション: $1${NC}"
+                return 1
+                ;;
+        esac
+    done
+
+    # スタックが存在するか確認
+    if ! check_stack_exists; then
+        echo -e "${RED}エラー: スタック '$STACK_NAME' が存在しません${NC}"
+        return 1
+    fi
+
+    echo -e "${BLUE}ローカルからサンプルデータベースをインポートします...${NC}"
+    echo -e "${YELLOW}注意: このコマンドを実行する前に、別のターミナルで以下のコマンドを実行してポートフォワーディングを設定してください:${NC}"
+    echo -e "  $0 port-forward-master --local-port $master_port"
+    echo -e "  $0 port-forward-second --local-port $second_port"
+    echo ""
+
+    read -p "ポートフォワーディングが設定されていますか？ (y/n): " confirm
+    if [ "$confirm" != "y" ]; then
+        echo -e "${BLUE}操作をキャンセルしました${NC}"
+        return 0
+    fi
+
+    # スクリプトを実行
+    echo -e "${BLUE}サンプルデータベースのインポートを開始します...${NC}"
+    ./scripts/import_sample_db.sh --local \
+        --master-endpoint "localhost:$master_port" \
+        --second-endpoint "localhost:$second_port"
+
+    if [ $? -eq 0 ]; then
+        echo -e "${GREEN}サンプルデータベースのインポートが完了しました${NC}"
+    else
+        echo -e "${RED}サンプルデータベースのインポートに失敗しました${NC}"
+        return 1
+    fi
 }
 
 # スタックをデプロイ
@@ -644,6 +701,9 @@ case $command in
         ;;
     port-forward-second)
         port_forward_second "$@"
+        ;;
+    import-sample-db)
+        import_sample_db_local "$@"
         ;;
     deploy-dms)
         deploy_dms_stack "$@"

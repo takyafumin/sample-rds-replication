@@ -60,72 +60,98 @@ graph TD
 
 ## クイックスタート
 
+このセクションでは、AWS DMSを使用したAurora MySQL間のレプリケーション環境を素早く構築する手順を説明します。
+
 ### ステップ1: 基本的なAurora MySQL環境をデプロイ
 
+以下のコマンドを実行して、2つのAurora MySQLクラスターと踏み台サーバーを含む基本的な環境をデプロイします。
+
 ```bash
-aws cloudformation deploy \
-  --template-file templates/rds-replication.yaml \
-  --stack-name aurora-mysql-env \
-  --parameter-overrides \
-    DBUsername=admin \
-    DBPassword=YourStrongPassword \
-    MasterDBName=hogedb \
-    SecondDBName=fugadb \
-  --capabilities CAPABILITY_IAM
+./run.sh deploy --db-password YourStrongPassword
+```
+
+デプロイには約15〜20分かかります。デプロイの進行状況は以下のコマンドで確認できます：
+
+```bash
+./run.sh status
 ```
 
 ### ステップ2: サンプルデータベースをインポート
 
-踏み台サーバーにSSM経由で接続するか、ローカルPCから直接、サンプルデータベースをインポートします。
+サンプルデータベースをローカルからインポートするには、以下の手順に従います：
 
-#### 踏み台サーバー経由でインポートする場合
+1. 2つのターミナルウィンドウを開き、それぞれでポートフォワーディングを設定します：
 
+ターミナル1（マスターDB用）:
 ```bash
-# SSM経由で踏み台サーバーに接続
-aws ssm start-session --target $(aws cloudformation describe-stacks --stack-name aurora-mysql-env --query "Stacks[0].Outputs[?OutputKey=='BastionInstanceId'].OutputValue" --output text)
-
-# 踏み台サーバー上で以下を実行
-chmod +x scripts/import_sample_db.sh
-./scripts/import_sample_db.sh aurora-mysql-env
+./run.sh port-forward-master --local-port 13306
 ```
 
-#### ローカルPCから直接インポートする場合
-
+ターミナル2（セカンドDB用）:
 ```bash
-# スクリプトに実行権限を付与
-chmod +x scripts/import_sample_db.sh
-
-# スクリプトを実行（CloudFormationスタック名を指定）
-./scripts/import_sample_db.sh aurora-mysql-env
+./run.sh port-forward-second --local-port 13307
 ```
 
-サンプルデータは自動的にプロジェクト内の `resources/samples` ディレクトリにダウンロードされます。このディレクトリは `.gitignore` で管理対象外に設定されています。
+2. 3つ目のターミナルウィンドウで、以下のコマンドを実行してサンプルデータベースをインポートします：
+
+```bash
+./run.sh import-sample-db --master-port 13306 --second-port 13307
+```
+
+このスクリプトは以下の処理を行います：
+- WorldデータベースとEmployeesデータベースをダウンロード
+- セカンドDBにこれらのデータベースをインポート
+- マスターDBに空のWorldデータベースを作成
 
 ### ステップ3: DMSレプリケーションをデプロイ
 
+サンプルデータベースのインポートが完了したら、DMSレプリケーションをデプロイします。
+
 ```bash
-aws cloudformation deploy \
-  --template-file templates/dms-replication.yaml \
-  --stack-name dms-replication \
-  --parameter-overrides \
-    ExistingStackName=aurora-mysql-env \
-    DBUsername=admin \
-    DBPassword=YourStrongPassword \
-    SourceDatabaseName=world \
-  --capabilities CAPABILITY_IAM
+./run.sh deploy-dms --db-password YourStrongPassword --source-db world
+```
+
+デプロイには約10〜15分かかります。デプロイの進行状況は以下のコマンドで確認できます：
+
+```bash
+./run.sh status-dms
 ```
 
 ### ステップ4: レプリケーションを検証
 
-踏み台サーバーでレプリケーション検証スクリプトを実行します。
+DMSレプリケーションのデプロイが完了したら、レプリケーションが正常に機能しているかを検証します。
 
 ```bash
-# 踏み台サーバー上で以下を実行
+# 踏み台サーバーに接続
+./run.sh connect-ec2
+
+# 踏み台サーバー上でスクリプトを実行
 chmod +x scripts/verify_replication.sh
-./scripts/verify_replication.sh aurora-mysql-env
+./scripts/verify_replication.sh rds-replication-stack
 ```
 
-詳細な手順については、[デプロイガイド](doc/deployment-guide.md)を参照してください。
+このスクリプトは以下の検証を行います：
+- ソースとターゲットのデータベース間でテーブル数を比較
+- 各テーブルの行数を比較
+- 新しい行を挿入して継続的なレプリケーションをテスト
+
+### ステップ5: DMSタスクの管理
+
+DMSタスクを管理するには、以下のコマンドを使用します：
+
+```bash
+# タスクのステータスを確認
+./run.sh status-dms
+
+# タスクを停止
+./run.sh stop-dms
+
+# タスクを開始
+./run.sh start-dms
+
+# タスクを再起動
+./run.sh restart-dms
+```
 
 ## 詳細ドキュメント
 
@@ -144,24 +170,6 @@ chmod +x scripts/verify_replication.sh
 
 スクリプトの詳細については、[ヘルパースクリプト](doc/helper-scripts.md)を参照してください。
 
-## DMSタスクの管理
-
-DMSタスクを管理するには、以下のコマンドを使用します：
-
-```bash
-# タスクのステータスを確認
-./scripts/manage_dms_task.sh dms-replication status
-
-# タスクを停止
-./scripts/manage_dms_task.sh dms-replication stop
-
-# タスクを開始
-./scripts/manage_dms_task.sh dms-replication start
-
-# タスクを再起動
-./scripts/manage_dms_task.sh dms-replication restart
-```
-
 ## 注意事項
 
 1. **バイナリログの有効化**: レプリケーションを機能させるためには、セカンドDBでバイナリログが有効になっている必要があります。既存のテンプレートではこれが設定されていることを前提としています。
@@ -176,8 +184,10 @@ DMSタスクを管理するには、以下のコマンドを使用します：
 
 ```bash
 # 1. DMSレプリケーションスタックを削除
-aws cloudformation delete-stack --stack-name dms-replication
+./run.sh delete-dms
 
 # 2. Aurora MySQL環境スタックを削除
-aws cloudformation delete-stack --stack-name aurora-mysql-env
+./run.sh delete
 ```
+
+これにより、すべてのリソースが適切に削除され、AWS上で不要な料金が発生しなくなります。

@@ -4,11 +4,67 @@
 # エラーが発生したら終了
 set -e
 
-# 設定
-STACK_NAME=$1
-if [ -z "$STACK_NAME" ]; then
-  echo "使用方法: $0 <スタック名>"
-  exit 1
+# 引数の解析
+STACK_NAME=""
+SECOND_DB_ENDPOINT=""
+MASTER_DB_ENDPOINT=""
+LOCAL_MODE=false
+
+# ヘルプメッセージを表示
+function show_help {
+    echo "使用方法:"
+    echo "  スタック名を指定して実行 (EC2内): $0 <スタック名>"
+    echo "  ローカルから実行: $0 --local --second-endpoint <セカンドDBエンドポイント> --master-endpoint <マスターDBエンドポイント>"
+    echo ""
+    echo "オプション:"
+    echo "  --local                ローカルモードで実行"
+    echo "  --second-endpoint      セカンドDBのエンドポイント"
+    echo "  --master-endpoint      マスターDBのエンドポイント"
+    echo "  --help                 このヘルプメッセージを表示"
+    exit 1
+}
+
+# 引数の解析
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --local)
+            LOCAL_MODE=true
+            shift
+            ;;
+        --second-endpoint)
+            SECOND_DB_ENDPOINT="$2"
+            shift 2
+            ;;
+        --master-endpoint)
+            MASTER_DB_ENDPOINT="$2"
+            shift 2
+            ;;
+        --help)
+            show_help
+            ;;
+        *)
+            if [ -z "$STACK_NAME" ]; then
+                STACK_NAME="$1"
+                shift
+            else
+                echo "エラー: 不明な引数 '$1'"
+                show_help
+            fi
+            ;;
+    esac
+done
+
+# 引数のバリデーション
+if [ "$LOCAL_MODE" = true ]; then
+    if [ -z "$SECOND_DB_ENDPOINT" ] || [ -z "$MASTER_DB_ENDPOINT" ]; then
+        echo "エラー: ローカルモードでは --second-endpoint と --master-endpoint が必須です"
+        show_help
+    fi
+else
+    if [ -z "$STACK_NAME" ]; then
+        echo "エラー: スタック名が指定されていません"
+        show_help
+    fi
 fi
 
 # スクリプトのディレクトリを取得
@@ -18,10 +74,16 @@ PROJECT_ROOT="$( cd "$SCRIPT_DIR/.." &> /dev/null && pwd )"
 # サンプルデータディレクトリを設定
 SAMPLE_DATA_DIR="$PROJECT_ROOT/resources/samples"
 
-# CloudFormationスタックから情報を取得
-echo "CloudFormationスタックから情報を取得中..."
-SECOND_DB_ENDPOINT=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --query "Stacks[0].Outputs[?OutputKey=='SecondDBEndpoint'].OutputValue" --output text)
-MASTER_DB_ENDPOINT=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --query "Stacks[0].Outputs[?OutputKey=='MasterDBEndpoint'].OutputValue" --output text)
+# CloudFormationスタックから情報を取得（ローカルモードでない場合）
+if [ "$LOCAL_MODE" = false ]; then
+    echo "CloudFormationスタックから情報を取得中..."
+    SECOND_DB_ENDPOINT=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --query "Stacks[0].Outputs[?OutputKey=='SecondDBEndpoint'].OutputValue" --output text)
+    MASTER_DB_ENDPOINT=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --query "Stacks[0].Outputs[?OutputKey=='MasterDBEndpoint'].OutputValue" --output text)
+else
+    echo "ローカルモードで実行中..."
+    echo "セカンドDBエンドポイント: $SECOND_DB_ENDPOINT"
+    echo "マスターDBエンドポイント: $MASTER_DB_ENDPOINT"
+fi
 
 # 認証情報の入力
 read -p "データベースユーザー名: " DB_USERNAME
