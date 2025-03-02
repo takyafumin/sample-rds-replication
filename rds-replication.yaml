@@ -223,6 +223,16 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: CloudFormationReadAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - cloudformation:DescribeStacks
+                  - ec2:DescribeTags
+                Resource: '*'
       Tags:
         - Key: Name
           Value: EC2-SSM-Role
@@ -251,33 +261,64 @@ Resources:
         Fn::Base64: !Sub |
           #!/bin/bash -xe
           yum update -y
-          yum install -y mysql
+          yum install -y mysql jq awscli
+
+          # SSMパラメータストアからDB接続情報を取得するヘルパー関数
+          function get_db_info() {
+            # CloudFormationスタック名を取得
+            TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+            INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
+            REGION=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/placement/region)
+
+            # スタック名を取得
+            STACK_NAME=$(aws ec2 describe-tags --region $REGION --filters "Name=resource-id,Values=$INSTANCE_ID" "Name=key,Values=aws:cloudformation:stack-name" --query "Tags[0].Value" --output text)
+
+            # スタックの出力から情報を取得
+            aws cloudformation describe-stacks --region $REGION --stack-name $STACK_NAME --query "$1" --output text
+          }
+
+          # ホームディレクトリに接続情報を保存
+          mkdir -p /home/ec2-user/db-scripts
 
           # 接続情報をファイルに保存
-          echo "# DB接続情報" > /tmp/db_info.txt
-          echo "マスターDB: ${MasterDBCluster.Endpoint.Address}" >> /tmp/db_info.txt
-          echo "セカンドDB: ${SecondDBCluster.Endpoint.Address}" >> /tmp/db_info.txt
-          echo "ユーザー名: ${DBUsername}" >> /tmp/db_info.txt
-          echo "マスターDB名: ${MasterDBName}" >> /tmp/db_info.txt
-          echo "セカンドDB名: ${SecondDBName}" >> /tmp/db_info.txt
+          echo "# DB接続情報" > /home/ec2-user/db-scripts/db_info.txt
+          echo "マスターDB: ${MasterDBCluster.Endpoint.Address}" >> /home/ec2-user/db-scripts/db_info.txt
+          echo "セカンドDB: ${SecondDBCluster.Endpoint.Address}" >> /home/ec2-user/db-scripts/db_info.txt
+          echo "ユーザー名: ${DBUsername}" >> /home/ec2-user/db-scripts/db_info.txt
+          echo "マスターDB名: ${MasterDBName}" >> /home/ec2-user/db-scripts/db_info.txt
+          echo "セカンドDB名: ${SecondDBName}" >> /home/ec2-user/db-scripts/db_info.txt
 
           # マスターDB接続用スクリプト
-          cat > /tmp/connect_master_db.sh << EOF
+          cat > /home/ec2-user/db-scripts/connect_master_db.sh << EOF
           #!/bin/bash
-          mysql -h ${MasterDBCluster.Endpoint.Address} -u ${DBUsername} -p ${MasterDBName}
+          # 動的にエンドポイントを取得
+          MASTER_ENDPOINT=\$(aws cloudformation describe-stacks --stack-name \$(aws ec2 describe-tags --filters "Name=resource-id,Values=\$(curl -s http://169.254.169.254/latest/meta-data/instance-id)" "Name=key,Values=aws:cloudformation:stack-name" --query "Tags[0].Value" --output text) --query "Stacks[0].Outputs[?OutputKey=='MasterDBEndpoint'].OutputValue" --output text)
+
+          echo "接続先: \$MASTER_ENDPOINT"
+          mysql -h \$MASTER_ENDPOINT -u ${DBUsername} -p ${MasterDBName}
           EOF
 
           # セカンドDB接続用スクリプト
-          cat > /tmp/connect_second_db.sh << EOF
+          cat > /home/ec2-user/db-scripts/connect_second_db.sh << EOF
           #!/bin/bash
-          mysql -h ${SecondDBCluster.Endpoint.Address} -u ${DBUsername} -p ${SecondDBName}
+          # 動的にエンドポイントを取得
+          SECOND_ENDPOINT=\$(aws cloudformation describe-stacks --stack-name \$(aws ec2 describe-tags --filters "Name=resource-id,Values=\$(curl -s http://169.254.169.254/latest/meta-data/instance-id)" "Name=key,Values=aws:cloudformation:stack-name" --query "Tags[0].Value" --output text) --query "Stacks[0].Outputs[?OutputKey=='SecondDBEndpoint'].OutputValue" --output text)
+
+          echo "接続先: \$SECOND_ENDPOINT"
+          mysql -h \$SECOND_ENDPOINT -u ${DBUsername} -p ${SecondDBName}
           EOF
 
-          chmod +x /tmp/connect_master_db.sh
-          chmod +x /tmp/connect_second_db.sh
-          chmod 777 /tmp/db_info.txt /tmp/connect_master_db.sh /tmp/connect_second_db.sh
+          # 適切なパーミッションを設定
+          chmod +x /home/ec2-user/db-scripts/connect_master_db.sh
+          chmod +x /home/ec2-user/db-scripts/connect_second_db.sh
+          chmod 640 /home/ec2-user/db-scripts/db_info.txt
+          chown -R ec2-user:ec2-user /home/ec2-user/db-scripts
 
-          echo "EC2 bastion host setup complete" > /tmp/setup_complete
+          # 便利なエイリアスを設定
+          echo "alias connect-master='/home/ec2-user/db-scripts/connect_master_db.sh'" >> /home/ec2-user/.bashrc
+          echo "alias connect-second='/home/ec2-user/db-scripts/connect_second_db.sh'" >> /home/ec2-user/.bashrc
+
+          echo "EC2 bastion host setup complete" > /home/ec2-user/setup_complete
       Tags:
         - Key: Name
           Value: RDS-Bastion-Host

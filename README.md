@@ -2,14 +2,14 @@
 
 ## 概要
 
-このプロジェクトはAWS RDSインスタンス間のレプリケーション検証環境を構築するためのCloudFormationテンプレートを提供します。
+このプロジェクトはAWS RDSインスタンス間のレプリケーション検証環境を簡単に構築・管理するためのツールを提供します。補助スクリプト `run.sh` を使用することで、複雑なAWS CLIコマンドを実行することなく、環境の構築から操作までをシンプルに行うことができます。
 
 ## 構成
 
 - VPC、サブネット、セキュリティグループなどのネットワークリソース
 - 2つのRDSインスタンス（MySQL 8.0.28）
-  - マスターDB: `hogedb`
-  - セカンドDB: `fugadb`
+  - マスターDB: `hogedb`（デフォルト、変更可能）
+  - セカンドDB: `fugadb`（デフォルト、変更可能）
 - SSM接続可能な踏み台EC2インスタンス
   - プライベートサブネットに配置
   - MySQLクライアントがプリインストール済み
@@ -79,240 +79,141 @@ graph TB
 - AWS認証情報が設定されていること
 - CloudFormationスタックを作成するための適切なIAM権限があること
 - SSMセッションマネージャーを使用するための権限があること
+- SSMセッションマネージャープラグインがインストールされていること（ポートフォワーディング機能を使用する場合）
 
-## 使い方
-
-### CloudFormationスタックのデプロイ
-
-以下のAWS CLIコマンドを使用してCloudFormationスタックをデプロイします：
+## クイックスタート
 
 ```bash
-aws cloudformation create-stack \
-  --stack-name rds-replication-stack \
-  --template-body file://rds-replication.yaml \
-  --parameters ParameterKey=DBPassword,ParameterValue=YOUR_PASSWORD_HERE \
-  --capabilities CAPABILITY_IAM
+# 1. スクリプトに実行権限を付与
+chmod +x run.sh
+
+# 2. スタックをデプロイ（約15-20分かかります）
+./run.sh deploy --db-password YourSecurePassword123
+
+# 3. スタックのステータスを確認
+./run.sh status
+
+# 4. 踏み台EC2インスタンスに接続
+./run.sh connect-ec2
+
+# 5. マスターDBへのポートフォワーディングを設定
+./run.sh port-forward-master
+
+# 6. 使用後はリソースを削除
+./run.sh delete
 ```
 
-パラメータの説明：
-- `--stack-name`: スタックの名前を指定します
-- `--template-body`: テンプレートファイルのパスを指定します
-- `--parameters`: テンプレートのパラメータを指定します（少なくともDBPasswordは必須）
-- `--capabilities`: 必要な機能を指定します（IAMリソース作成のため必須）
+## 詳細な使い方
 
-### CloudFormationスタックの更新
+### 1. 環境のセットアップ
 
-テンプレートを変更した後、以下のコマンドでスタックを更新できます：
+まず、スクリプトに実行権限を付与します：
 
 ```bash
-aws cloudformation update-stack \
-  --stack-name rds-replication-stack \
-  --template-body file://rds-replication.yaml \
-  --parameters ParameterKey=DBPassword,ParameterValue=YOUR_PASSWORD_HERE \
-  --capabilities CAPABILITY_IAM
+chmod +x run.sh
 ```
 
-既存のパラメータ値を再利用する場合（新しく追加されたパラメータには値を指定）：
+ヘルプを表示して、利用可能なコマンドを確認できます：
 
 ```bash
-aws cloudformation update-stack \
-  --stack-name rds-replication-stack \
-  --template-body file://rds-replication.yaml \
-  --parameters ParameterKey=DBPassword,UsePreviousValue=true \
-               ParameterKey=MasterDBName,UsePreviousValue=true \
-               ParameterKey=SecondDBName,UsePreviousValue=true \
-               ParameterKey=DBInstanceClass,UsePreviousValue=true \
-               ParameterKey=DBUsername,UsePreviousValue=true \
-               ParameterKey=EC2InstanceType,ParameterValue=t3.micro \
-               ParameterKey=LatestAmiId,ParameterValue=/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2 \
-  --capabilities CAPABILITY_IAM
+./run.sh help
 ```
 
-注意: 新しく追加されたパラメータ（EC2InstanceTypeやLatestAmiIdなど）には`UsePreviousValue=true`を指定できません。これらには明示的に値を指定する必要があります。
+### 2. 環境のデプロイ
 
-変更セットを使用した更新（推奨）：
+最小限の設定でデプロイする場合（DBパスワードのみ指定）：
 
 ```bash
-# 変更セットの作成
-aws cloudformation create-change-set \
-  --stack-name rds-replication-stack \
-  --change-set-name update-rds-replication \
-  --template-body file://rds-replication.yaml \
-  --parameters ParameterKey=DBPassword,ParameterValue=YOUR_PASSWORD_HERE \
-               ParameterKey=MasterDBName,UsePreviousValue=true \
-               ParameterKey=SecondDBName,UsePreviousValue=true \
-               ParameterKey=DBInstanceClass,UsePreviousValue=true \
-               ParameterKey=DBUsername,UsePreviousValue=true \
-               ParameterKey=EC2InstanceType,ParameterValue=t3.micro \
-               ParameterKey=LatestAmiId,ParameterValue=/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2 \
-  --capabilities CAPABILITY_IAM
-
-# 変更セットの内容確認
-aws cloudformation describe-change-set \
-  --stack-name rds-replication-stack \
-  --change-set-name update-rds-replication
-
-# 変更セットの実行
-aws cloudformation execute-change-set \
-  --stack-name rds-replication-stack \
-  --change-set-name update-rds-replication
+./run.sh deploy --db-password YourSecurePassword123
 ```
 
-注意事項：
-- 一部のリソース変更は置き換えが必要となり、ダウンタイムが発生する可能性があります
-- 更新前にテンプレートの変更内容を十分に確認してください
-- 重要なデータがある場合は、事前にバックアップを取得してください
-
-### スタックの進行状況の確認
+カスタム設定でデプロイする場合：
 
 ```bash
-aws cloudformation describe-stacks --stack-name rds-replication-stack
+./run.sh deploy \
+  --db-password YourSecurePassword123 \
+  --db-username customadmin \
+  --master-db-name masterdb \
+  --second-db-name seconddb \
+  --db-instance-class db.t3.small \
+  --ec2-instance-type t3.small
 ```
 
-### スタックの出力の取得
+### 3. 環境の管理
 
-デプロイが完了したら、以下のコマンドでRDSエンドポイントなどの出力値を取得できます：
+スタックのステータスを確認：
 
 ```bash
-aws cloudformation describe-stacks \
-  --stack-name rds-replication-stack \
-  --query "Stacks[0].Outputs"
+./run.sh status
 ```
 
-### EC2踏み台サーバーへの接続
-
-SSMセッションマネージャーを使用して踏み台サーバーに接続します：
+スタックの出力値（エンドポイントなど）を表示：
 
 ```bash
-# スタック出力から取得したコマンドを使用
-aws ssm start-session --target i-xxxxxxxxxxxxxxxxx
+./run.sh outputs
 ```
 
-### RDSへの接続
-
-踏み台サーバーに接続後、以下のコマンドでRDSインスタンスに接続できます：
+スタックを更新（パスワードを変更）：
 
 ```bash
-# マスターDBへの接続
-mysql -h <マスターDBエンドポイント> -u admin -p hogedb
-
-# セカンドDBへの接続
-mysql -h <セカンドDBエンドポイント> -u admin -p fugadb
+./run.sh update --db-password NewPassword123
 ```
 
-### スタックの削除
-
-検証が終了したら、以下のコマンドでスタックを削除できます：
+スタックを更新（EC2インスタンスタイプのみ変更、既存のパスワードを使用）：
 
 ```bash
-aws cloudformation delete-stack --stack-name rds-replication-stack
+./run.sh update --use-previous-password --ec2-instance-type t3.small
 ```
 
-## パラメータ
-
-テンプレートでは以下のパラメータをカスタマイズできます：
-
-- `MasterDBName`: マスターデータベース名（デフォルト: hogedb）
-- `SecondDBName`: 2つ目のRDSインスタンス上のデータベース名（デフォルト: fugadb）
-- `DBInstanceClass`: DBインスタンスクラス（デフォルト: db.t3.medium）
-- `DBUsername`: データベース管理者ユーザー名（デフォルト: admin）
-- `DBPassword`: データベース管理者パスワード（必須）
-- `EC2InstanceType`: 踏み台サーバーのインスタンスタイプ（デフォルト: t3.micro）
-- `LatestAmiId`: 踏み台サーバーのAMI ID（デフォルト: 最新のAmazon Linux 2）
-
-## 注意事項
-
-- このテンプレートはテスト・検証用途を想定しています
-- 本番環境での使用には適切なセキュリティ設定を追加してください
-- RDSインスタンスとEC2インスタンスには料金が発生します。使用後は忘れずに削除してください
-- EC2インスタンスはプライベートサブネットに配置されており、インターネットアクセスはありません
-- SSM接続のためのVPCエンドポイントが設定されています
-
-## SSMポートフォワーディングを使用したRDSへの接続
-
-SSMポートフォワーディングを使用すると、ローカルマシンから直接RDSインスタンスに接続できます。これにより、踏み台サーバーにログインせずにRDSにアクセスできます。
-
-### 前提条件
-
-- AWS CLIがインストールされていること
-- AWS Session Managerプラグインがインストールされていること
-  ```bash
-  # macOSの場合
-  brew install --cask session-manager-plugin
-
-  # Amazon Linux/RHEL/CentOSの場合
-  curl "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/linux_64bit/session-manager-plugin.rpm" -o "session-manager-plugin.rpm"
-  sudo yum install -y session-manager-plugin.rpm
-
-  # Ubuntuの場合
-  curl "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb" -o "session-manager-plugin.deb"
-  sudo dpkg -i session-manager-plugin.deb
-
-  # Windowsの場合
-  # https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html からインストーラーをダウンロード
-  ```
-
-### ポートフォワーディングの設定
-
-1. EC2インスタンスIDを取得します：
+スタックを削除（すべてのリソースを削除）：
 
 ```bash
-aws cloudformation describe-stacks \
-  --stack-name rds-replication-stack \
-  --query "Stacks[0].Outputs[?OutputKey=='BastionInstanceId'].OutputValue" \
-  --output text
+./run.sh delete
 ```
 
-2. RDSエンドポイントを取得します：
+### 4. データベースへのアクセス
+
+#### 踏み台EC2インスタンスに直接接続
 
 ```bash
-# マスターDBエンドポイント
-aws cloudformation describe-stacks \
-  --stack-name rds-replication-stack \
-  --query "Stacks[0].Outputs[?OutputKey=='MasterDBEndpoint'].OutputValue" \
-  --output text
-
-# セカンドDBエンドポイント
-aws cloudformation describe-stacks \
-  --stack-name rds-replication-stack \
-  --query "Stacks[0].Outputs[?OutputKey=='SecondDBEndpoint'].OutputValue" \
-  --output text
+./run.sh connect-ec2
 ```
 
-3. SSMポートフォワーディングを開始します：
+接続後、EC2インスタンス上で以下のコマンドを実行してデータベースに接続できます：
 
 ```bash
-# マスターDBへのポートフォワーディング（ローカルポート3306をRDSの3306に転送）
-aws ssm start-session \
-  --target インスタンスID \
-  --document-name AWS-StartPortForwardingSessionToRemoteHost \
-  --parameters '{"host":["マスターDBエンドポイント"],"portNumber":["3306"], "localPortNumber":["3306"]}'
+# マスターDBに接続
+mysql -h $(cat /home/ec2-user/db-scripts/db_info.txt | grep MASTER_ENDPOINT | cut -d'=' -f2) -u admin -p hogedb
 
-# セカンドDBへのポートフォワーディング（ローカルポート3307をRDSの3306に転送）
-aws ssm start-session \
-  --target インスタンスID \
-  --document-name AWS-StartPortForwardingSessionToRemoteHost \
-  --parameters '{"host":["セカンドDBエンドポイント"],"portNumber":["3306"], "localPortNumber":["3307"]}'
+# または、作成済みのエイリアスを使用
+master-db
+
+# セカンドDBに接続
+mysql -h $(cat /home/ec2-user/db-scripts/db_info.txt | grep SECOND_ENDPOINT | cut -d'=' -f2) -u admin -p fugadb
+
+# または、作成済みのエイリアスを使用
+second-db
 ```
 
-注意: ローカルの3306ポートが既に使用されている場合は、別のポート（例：13306）を指定してください。
+#### ローカルマシンからデータベースに接続（ポートフォワーディング）
 
-### 具体的なコマンド例
-
-以下は、このプロジェクトのCloudFormationスタックがデプロイされている場合の具体的なコマンド例です：
+マスターDBへのポートフォワーディングを設定（デフォルトはローカルポート3306）：
 
 ```bash
-# マスターDBへのポートフォワーディング
-aws ssm start-session \
-  --target i-0c260e5025fe80a03 \
-  --document-name AWS-StartPortForwardingSessionToRemoteHost \
-  --parameters '{"host":["rds-replication-stack-masterdbcluster-gnsrcbaxedjc.cluster-chopxyypdptr.ap-northeast-1.rds.amazonaws.com"],"portNumber":["3306"], "localPortNumber":["3306"]}'
+./run.sh port-forward-master
+```
 
-# セカンドDBへのポートフォワーディング
-aws ssm start-session \
-  --target i-0c260e5025fe80a03 \
-  --document-name AWS-StartPortForwardingSessionToRemoteHost \
-  --parameters '{"host":["rds-replication-stack-seconddbcluster-pi2iozlfbgyh.cluster-chopxyypdptr.ap-northeast-1.rds.amazonaws.com"],"portNumber":["3306"], "localPortNumber":["3307"]}'
+セカンドDBへのポートフォワーディングを設定（デフォルトはローカルポート3307）：
+
+```bash
+./run.sh port-forward-second
+```
+
+カスタムローカルポートを指定してポートフォワーディング：
+
+```bash
+./run.sh port-forward-master --local-port 13306
+./run.sh port-forward-second --local-port 13307
 ```
 
 ポートフォワーディングが確立されたら、別のターミナルウィンドウで以下のコマンドを実行してRDSに接続できます：
@@ -325,26 +226,44 @@ mysql -h 127.0.0.1 -P 3306 -u admin -p hogedb
 mysql -h 127.0.0.1 -P 3307 -u admin -p fugadb
 ```
 
-4. 別のターミナルウィンドウで、ローカルホストを通じてRDSに接続します：
+## パラメータ一覧
 
-```bash
-# マスターDBへの接続（ローカルポート3306経由）
-mysql -h 127.0.0.1 -P 3306 -u admin -p hogedb
+### deployコマンドのパラメータ
 
-# セカンドDBへの接続（ローカルポート3307経由）
-mysql -h 127.0.0.1 -P 3307 -u admin -p fugadb
-```
+| パラメータ | 説明 | デフォルト値 | 必須 |
+|------------|------|------------|------|
+| `--db-password` | データベースのパスワード | - | はい |
+| `--db-username` | データベースのユーザー名 | admin | いいえ |
+| `--master-db-name` | マスターデータベース名 | hogedb | いいえ |
+| `--second-db-name` | セカンドデータベース名 | fugadb | いいえ |
+| `--db-instance-class` | DBインスタンスクラス | db.t3.medium | いいえ |
+| `--ec2-instance-type` | EC2インスタンスタイプ | t3.micro | いいえ |
 
-### ポートフォワーディングの終了
+### updateコマンドの追加パラメータ
 
-ポートフォワーディングを終了するには、セッションを実行しているターミナルで `Ctrl+C` を押します。
+| パラメータ | 説明 |
+|------------|------|
+| `--use-previous-password` | 既存のDBパスワードを使用 |
+| `--use-previous-username` | 既存のDBユーザー名を使用 |
+| `--use-previous-master-db-name` | 既存のマスターDB名を使用 |
+| `--use-previous-second-db-name` | 既存のセカンドDB名を使用 |
+| `--use-previous-db-instance-class` | 既存のDBインスタンスクラスを使用 |
+| `--use-previous-ec2-instance-type` | 既存のEC2インスタンスタイプを使用 |
 
-### トラブルシューティング
+## トラブルシューティング
 
 1. **接続エラー**: EC2インスタンスがRDSエンドポイントに到達できることを確認してください。セキュリティグループの設定を確認します。
 
 2. **権限エラー**: AWS CLIの認証情報と、SSMセッションマネージャーを使用するための適切なIAM権限があることを確認してください。
 
-3. **ポートの競合**: ローカルポートが既に使用されている場合は、別のポート番号を指定してください。
+3. **ポートの競合**: ローカルポートが既に使用されている場合は、`--local-port` オプションで別のポート番号を指定してください。
 
-4. **Session Managerプラグインのエラー**: プラグインが正しくインストールされていることを確認してください。
+4. **Session Managerプラグインのエラー**: プラグインが正しくインストールされていることを確認してください。インストール方法は[AWS公式ドキュメント](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html)を参照してください。
+
+5. **スタックの作成/更新エラー**: `./run.sh status` コマンドを実行して詳細なエラーメッセージを確認してください。
+
+## 注意事項
+
+- このプロジェクトは検証環境用です。本番環境で使用する場合は、適切なセキュリティ設定を行ってください。
+- 使用後はリソースを削除して、不要な料金が発生しないようにしてください。
+- RDSインスタンスは料金が発生します。特にdb.t3.mediumクラスは比較的コストが高いため、長時間の使用には注意してください。
