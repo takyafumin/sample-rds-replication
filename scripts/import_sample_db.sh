@@ -11,6 +11,13 @@ if [ -z "$STACK_NAME" ]; then
   exit 1
 fi
 
+# スクリプトのディレクトリを取得
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+# プロジェクトのルートディレクトリを取得
+PROJECT_ROOT="$( cd "$SCRIPT_DIR/.." &> /dev/null && pwd )"
+# サンプルデータディレクトリを設定
+SAMPLE_DATA_DIR="$PROJECT_ROOT/resources/samples"
+
 # CloudFormationスタックから情報を取得
 echo "CloudFormationスタックから情報を取得中..."
 SECOND_DB_ENDPOINT=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --query "Stacks[0].Outputs[?OutputKey=='SecondDBEndpoint'].OutputValue" --output text)
@@ -23,8 +30,8 @@ echo ""
 
 # サンプルデータベースのダウンロード
 echo "サンプルデータベースをダウンロード中..."
-mkdir -p ~/sample_db
-cd ~/sample_db
+mkdir -p "$SAMPLE_DATA_DIR"
+cd "$SAMPLE_DATA_DIR"
 
 # World データベース
 if [ ! -f world.sql ]; then

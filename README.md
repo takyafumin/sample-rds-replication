@@ -76,7 +76,9 @@ aws cloudformation deploy \
 
 ### ステップ2: サンプルデータベースをインポート
 
-踏み台サーバーにSSM経由で接続し、サンプルデータベースをインポートします。
+踏み台サーバーにSSM経由で接続するか、ローカルPCから直接、サンプルデータベースをインポートします。
+
+#### 踏み台サーバー経由でインポートする場合
 
 ```bash
 # SSM経由で踏み台サーバーに接続
@@ -86,6 +88,18 @@ aws ssm start-session --target $(aws cloudformation describe-stacks --stack-name
 chmod +x scripts/import_sample_db.sh
 ./scripts/import_sample_db.sh aurora-mysql-env
 ```
+
+#### ローカルPCから直接インポートする場合
+
+```bash
+# スクリプトに実行権限を付与
+chmod +x scripts/import_sample_db.sh
+
+# スクリプトを実行（CloudFormationスタック名を指定）
+./scripts/import_sample_db.sh aurora-mysql-env
+```
+
+サンプルデータは自動的にプロジェクト内の `resources/samples` ディレクトリにダウンロードされます。このディレクトリは `.gitignore` で管理対象外に設定されています。
 
 ### ステップ3: DMSレプリケーションをデプロイ
 
