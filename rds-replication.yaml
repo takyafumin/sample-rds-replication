@@ -1,0 +1,217 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'RDSレプリケーション検証環境 - 初期構成'
+
+Parameters:
+  MasterDBName:
+    Type: String
+    Default: hogedb
+    Description: マスターデータベース名
+
+  SecondDBName:
+    Type: String
+    Default: fugadb
+    Description: 2つ目のRDSインスタンス上のデータベース名
+
+  DBInstanceClass:
+    Type: String
+    Default: db.t3.micro
+    Description: DBインスタンスクラス
+
+  DBUsername:
+    Type: String
+    Default: admin
+    Description: データベース管理者ユーザー名
+
+  DBPassword:
+    Type: String
+    NoEcho: true
+    Description: データベース管理者パスワード
+
+Resources:
+  # VPC - RDSインスタンスを配置するための仮想ネットワーク
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: RDS-Replication-VPC
+
+  # パブリックサブネット1 - インターネットからアクセス可能なサブネット（AZ1）
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: Public-Subnet-1
+
+  # パブリックサブネット2 - インターネットからアクセス可能なサブネット（AZ2）
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.2.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: Public-Subnet-2
+
+  # プライベートサブネット1 - RDSを配置するプライベートサブネット（AZ1）
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.3.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: Private-Subnet-1
+
+  # プライベートサブネット2 - RDSを配置するプライベートサブネット（AZ2）
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.4.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: Private-Subnet-2
+
+  # インターネットゲートウェイ - VPCをインターネットに接続するためのゲートウェイ
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: RDS-IGW
+
+  # インターネットゲートウェイアタッチメント - IGWをVPCに接続
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  # パブリックルートテーブル - パブリックサブネットのルーティング設定
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: Public-Route-Table
+
+  # パブリックルート - インターネットへのルート設定
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  # パブリックサブネット1とルートテーブルの関連付け
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+
+  # パブリックサブネット2とルートテーブルの関連付け
+  PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref PublicRouteTable
+
+  # DBセキュリティグループ - RDSインスタンスのセキュリティ設定
+  DBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for RDS instances
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          CidrIp: 10.0.0.0/16
+      Tags:
+        - Key: Name
+          Value: RDS-Security-Group
+
+  # RDS用のサブネットグループ - RDSをマルチAZに配置するためのサブネットグループ
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Subnet group for RDS instances
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      Tags:
+        - Key: Name
+          Value: RDS-Subnet-Group
+
+  # マスターRDSインスタンス (RDS1) - hogedbデータベースを持つマスターインスタンス
+  MasterDBInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceIdentifier: rds1-master
+      AllocatedStorage: 20
+      DBInstanceClass: !Ref DBInstanceClass
+      Engine: mysql
+      EngineVersion: 8.0.28
+      MasterUsername: !Ref DBUsername
+      MasterUserPassword: !Ref DBPassword
+      DBName: !Ref MasterDBName
+      VPCSecurityGroups:
+        - !Ref DBSecurityGroup
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      BackupRetentionPeriod: 7
+      MultiAZ: false
+      PubliclyAccessible: false
+      StorageType: gp2
+      Tags:
+        - Key: Name
+          Value: RDS1-Master
+
+  # 2つ目のRDSインスタンス (RDS2) - fugadbデータベースを持つ独立したインスタンス
+  SecondDBInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceIdentifier: rds2-second
+      AllocatedStorage: 20
+      DBInstanceClass: !Ref DBInstanceClass
+      Engine: mysql
+      EngineVersion: 8.0.28
+      MasterUsername: !Ref DBUsername
+      MasterUserPassword: !Ref DBPassword
+      DBName: !Ref SecondDBName
+      VPCSecurityGroups:
+        - !Ref DBSecurityGroup
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      BackupRetentionPeriod: 7
+      MultiAZ: false
+      PubliclyAccessible: false
+      StorageType: gp2
+      Tags:
+        - Key: Name
+          Value: RDS2-Second
+
+Outputs:
+  # マスターDBのエンドポイント - RDS1への接続情報
+  MasterDBEndpoint:
+    Description: マスターDBのエンドポイント
+    Value: !GetAtt MasterDBInstance.Endpoint.Address
+
+  # 2つ目のDBのエンドポイント - RDS2への接続情報
+  SecondDBEndpoint:
+    Description: 2つ目のDBのエンドポイント
+    Value: !GetAtt SecondDBInstance.Endpoint.Address
