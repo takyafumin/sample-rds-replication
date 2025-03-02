@@ -509,3 +509,28 @@ Outputs:
   SSMConnectCommand:
     Description: SSMを使用して踏み台サーバーに接続するコマンド
     Value: !Sub "aws ssm start-session --target ${BastionEC2Instance}"
+
+  # VPC ID - DMSレプリケーションで使用
+  VPC:
+    Description: VPC ID
+    Value: !Ref VPC
+
+  # VPC CIDR - DMSレプリケーションで使用
+  VPCCidrBlock:
+    Description: VPC CIDR Block
+    Value: !GetAtt VPC.CidrBlock
+
+  # プライベートサブネット1 - DMSレプリケーションで使用
+  PrivateSubnet1:
+    Description: プライベートサブネット1 ID
+    Value: !Ref PrivateSubnet1
+
+  # プライベートサブネット2 - DMSレプリケーションで使用
+  PrivateSubnet2:
+    Description: プライベートサブネット2 ID
+    Value: !Ref PrivateSubnet2
+
+  # DBセキュリティグループ - DMSレプリケーションで使用
+  DBSecurityGroup:
+    Description: データベースセキュリティグループ
+    Value: !Ref DBSecurityGroup

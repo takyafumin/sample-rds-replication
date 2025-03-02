@@ -167,7 +167,8 @@ Resources:
       Username: !Ref DBUsername
       Password: !Ref DBPassword
       DatabaseName: !Ref SourceDatabaseName
-      ExtraConnectionAttributes: 'binlogRowImage=full'
+      # Aurora MySQLソースでは、バイナリログ関連の設定はデータベース側で行う必要があります
+      # ExtraConnectionAttributesは必要な場合のみ指定します
       Tags:
         - Key: Name
           Value: DMS-Source-Endpoint

@@ -1,0 +1,44 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'AWS DMS に必要な IAM ロールの作成'
+
+Resources:
+  # DMS VPC ロール
+  DMSVPCRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: dms-vpc-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: dms.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonDMSVPCManagementRole
+      Path: /
+
+  # DMS CloudWatch Logs ロール
+  DMSCloudWatchLogsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: dms-cloudwatch-logs-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: dms.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonDMSCloudWatchLogsRole
+      Path: /
+
+Outputs:
+  DMSVPCRoleARN:
+    Description: DMS VPC ロールの ARN
+    Value: !GetAtt DMSVPCRole.Arn
+
+  DMSCloudWatchLogsRoleARN:
+    Description: DMS CloudWatch Logs ロールの ARN
+    Value: !GetAtt DMSCloudWatchLogsRole.Arn

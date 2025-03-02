@@ -12,6 +12,8 @@ STACK_NAME="rds-replication-stack"
 TEMPLATE_FILE="templates/rds-replication.yaml"
 DMS_STACK_NAME="dms-replication"
 DMS_TEMPLATE_FILE="templates/dms-replication.yaml"
+IAM_STACK_NAME="dms-iam-roles"
+IAM_TEMPLATE_FILE="iam-setup/dms-iam-roles.yaml"
 REGION=$(aws configure get region)
 if [ -z "$REGION" ]; then
     REGION="ap-northeast-1" # デフォルトリージョン
@@ -41,6 +43,9 @@ function show_help {
     echo -e "  ${GREEN}stop-dms${NC}            - DMSレプリケーションタスクを停止します"
     echo -e "  ${GREEN}restart-dms${NC}         - DMSレプリケーションタスクを再起動します"
     echo -e "  ${GREEN}delete-dms${NC}          - DMSレプリケーションスタックを削除します"
+    echo -e "  ${GREEN}deploy-iam${NC}          - DMSに必要なIAMロールをデプロイします"
+    echo -e "  ${GREEN}delete-iam${NC}          - DMSのIAMロールスタックを削除します"
+    echo -e "  ${GREEN}status-iam${NC}          - DMSのIAMロールスタックのステータスを表示します"
     echo -e "  ${GREEN}help${NC}                - このヘルプメッセージを表示します"
     echo ""
     echo -e "${YELLOW}例:${NC}"
@@ -53,6 +58,9 @@ function show_help {
     echo -e "  $0 ${GREEN}verify-replication${NC} --master-port 13306 --second-port 13307"
     echo -e "  $0 ${GREEN}deploy-dms${NC} --db-password MySecurePassword123 --source-db world"
     echo -e "  $0 ${GREEN}delete-dms${NC}"
+    echo -e "  $0 ${GREEN}deploy-iam${NC}"
+    echo -e "  $0 ${GREEN}delete-iam${NC}"
+    echo -e "  $0 ${GREEN}status-iam${NC}"
     echo ""
 }
 
@@ -1026,9 +1034,155 @@ function delete_dms_stack {
     aws cloudformation delete-stack --stack-name $DMS_STACK_NAME
 
     echo -e "${BLUE}DMSレプリケーションスタックの削除を開始しました${NC}"
-    echo -e "${BLUE}削除の進行状況を確認するには以下のコマンドを実行してください:${NC}"
-    echo -e "  aws cloudformation describe-stacks --stack-name $DMS_STACK_NAME"
-    echo -e "${YELLOW}注意: スタックが完全に削除されるまでに数分かかる場合があります${NC}"
+    echo -e "${BLUE}削除の進行状況は ${YELLOW}./run.sh status-dms${NC} で確認できます${NC}"
+}
+
+# DMSに必要なIAMロールをデプロイ
+function deploy_iam_stack {
+    echo -e "${BLUE}DMSに必要なIAMロールをデプロイしています...${NC}"
+
+    # 既存のIAMロールを確認
+    local vpc_role_exists=$(aws iam list-roles --query "Roles[?RoleName=='dms-vpc-role'].RoleName" --output text)
+    local logs_role_exists=$(aws iam list-roles --query "Roles[?RoleName=='dms-cloudwatch-logs-role'].RoleName" --output text)
+
+    if [[ -n "$vpc_role_exists" && -n "$logs_role_exists" ]]; then
+        echo -e "${YELLOW}必要なIAMロール（dms-vpc-role, dms-cloudwatch-logs-role）は既に存在します${NC}"
+        echo -e "${BLUE}既存のロールを使用します${NC}"
+
+        # 既存のロールのARNを表示
+        local vpc_role_arn=$(aws iam get-role --role-name dms-vpc-role --query "Role.Arn" --output text)
+        local logs_role_arn=$(aws iam get-role --role-name dms-cloudwatch-logs-role --query "Role.Arn" --output text)
+
+        echo -e "${BLUE}DMS VPC ロールARN:${NC} $vpc_role_arn"
+        echo -e "${BLUE}DMS CloudWatch Logs ロールARN:${NC} $logs_role_arn"
+
+        echo -e "${BLUE}次のステップ:${NC}"
+        echo -e "1. ${YELLOW}./run.sh deploy-dms --db-password <パスワード> --source-db world${NC} でDMSレプリケーションをデプロイ"
+
+        return 0
+    fi
+
+    # 一部のロールだけが存在する場合は警告
+    if [[ -n "$vpc_role_exists" || -n "$logs_role_exists" ]]; then
+        echo -e "${YELLOW}警告: 一部のDMS IAMロールは既に存在しますが、すべてが揃っていません${NC}"
+        echo -e "${YELLOW}既存のロールを削除してから再デプロイすることをお勧めします${NC}"
+        echo -e "${YELLOW}続行しますか？ (y/n)${NC}"
+        read -r confirm
+        if [[ $confirm != [yY] ]]; then
+            echo -e "${BLUE}デプロイをキャンセルしました${NC}"
+            return 0
+        fi
+    fi
+
+    # CloudFormationスタックをデプロイ
+    aws cloudformation deploy \
+        --template-file $IAM_TEMPLATE_FILE \
+        --stack-name $IAM_STACK_NAME \
+        --capabilities CAPABILITY_NAMED_IAM \
+        --region $REGION
+
+    local result=$?
+    if [ $result -eq 0 ]; then
+        echo -e "${GREEN}DMSに必要なIAMロールのデプロイが完了しました${NC}"
+        echo -e "${BLUE}次のステップ:${NC}"
+        echo -e "1. ${YELLOW}./run.sh deploy-dms --db-password <パスワード> --source-db world${NC} でDMSレプリケーションをデプロイ"
+    else
+        echo -e "${RED}DMSに必要なIAMロールのデプロイに失敗しました${NC}"
+        echo -e "${YELLOW}既存のIAMロールが原因の場合は、以下のコマンドで確認できます:${NC}"
+        echo -e "${YELLOW}aws iam list-roles | grep -E \"dms-vpc-role|dms-cloudwatch-logs-role\"${NC}"
+    fi
+
+    return $result
+}
+
+# DMSのIAMロールスタックを削除
+function delete_iam_stack {
+    # スタックが存在するか確認
+    if ! aws cloudformation describe-stacks --stack-name $IAM_STACK_NAME --region $REGION &> /dev/null; then
+        echo -e "${YELLOW}IAMロールスタック '$IAM_STACK_NAME' は存在しません${NC}"
+        return 0
+    fi
+
+    echo -e "${YELLOW}DMSのIAMロールスタックを削除します。よろしいですか？ (y/n)${NC}"
+    read -r confirm
+    if [[ $confirm != [yY] ]]; then
+        echo -e "${BLUE}削除をキャンセルしました${NC}"
+        return 0
+    fi
+
+    echo -e "${BLUE}DMSのIAMロールスタックを削除しています...${NC}"
+    aws cloudformation delete-stack --stack-name $IAM_STACK_NAME --region $REGION
+
+    echo -e "${BLUE}DMSのIAMロールスタックの削除を開始しました${NC}"
+    echo -e "${BLUE}削除の進行状況は ${YELLOW}./run.sh status-iam${NC} で確認できます${NC}"
+}
+
+# DMSのIAMロールスタックのステータスを表示
+function show_iam_status {
+    # スタックが存在するか確認
+    if ! aws cloudformation describe-stacks --stack-name $IAM_STACK_NAME --region $REGION &> /dev/null; then
+        echo -e "${YELLOW}IAMロールスタック '$IAM_STACK_NAME' は存在しません${NC}"
+
+        # 既存のIAMロールを確認
+        local vpc_role_exists=$(aws iam list-roles --query "Roles[?RoleName=='dms-vpc-role'].RoleName" --output text)
+        local logs_role_exists=$(aws iam list-roles --query "Roles[?RoleName=='dms-cloudwatch-logs-role'].RoleName" --output text)
+
+        if [[ -n "$vpc_role_exists" && -n "$logs_role_exists" ]]; then
+            echo -e "${YELLOW}ただし、必要なIAMロール（dms-vpc-role, dms-cloudwatch-logs-role）は既に存在します${NC}"
+
+            # 既存のロールのARNを表示
+            local vpc_role_arn=$(aws iam get-role --role-name dms-vpc-role --query "Role.Arn" --output text)
+            local logs_role_arn=$(aws iam get-role --role-name dms-cloudwatch-logs-role --query "Role.Arn" --output text)
+
+            echo -e "${BLUE}DMS VPC ロールARN:${NC} $vpc_role_arn"
+            echo -e "${BLUE}DMS CloudWatch Logs ロールARN:${NC} $logs_role_arn"
+        else
+            echo -e "${YELLOW}必要なIAMロールも存在しません。${YELLOW}./run.sh deploy-iam${NC} を実行してデプロイしてください${NC}"
+        fi
+
+        return 0
+    fi
+
+    echo -e "${BLUE}DMSのIAMロールスタックのステータスを確認しています...${NC}"
+    local stack_status=$(aws cloudformation describe-stacks --stack-name $IAM_STACK_NAME --region $REGION --query "Stacks[0].StackStatus" --output text)
+
+    echo -e "${BLUE}スタック名:${NC} $IAM_STACK_NAME"
+    echo -e "${BLUE}ステータス:${NC} $stack_status"
+
+    if [[ $stack_status == "CREATE_COMPLETE" || $stack_status == "UPDATE_COMPLETE" ]]; then
+        echo -e "${GREEN}IAMロールスタックは正常にデプロイされています${NC}"
+
+        # IAMロールのARNを取得して表示
+        local vpc_role_arn=$(aws cloudformation describe-stacks --stack-name $IAM_STACK_NAME --region $REGION --query "Stacks[0].Outputs[?OutputKey=='DMSVPCRoleARN'].OutputValue" --output text)
+        local logs_role_arn=$(aws cloudformation describe-stacks --stack-name $IAM_STACK_NAME --region $REGION --query "Stacks[0].Outputs[?OutputKey=='DMSCloudWatchLogsRoleARN'].OutputValue" --output text)
+
+        echo -e "${BLUE}DMS VPC ロールARN:${NC} $vpc_role_arn"
+        echo -e "${BLUE}DMS CloudWatch Logs ロールARN:${NC} $logs_role_arn"
+    elif [[ $stack_status == "ROLLBACK_COMPLETE" ]]; then
+        echo -e "${YELLOW}IAMロールスタックのデプロイに失敗しました${NC}"
+
+        # 既存のIAMロールを確認
+        local vpc_role_exists=$(aws iam list-roles --query "Roles[?RoleName=='dms-vpc-role'].RoleName" --output text)
+        local logs_role_exists=$(aws iam list-roles --query "Roles[?RoleName=='dms-cloudwatch-logs-role'].RoleName" --output text)
+
+        if [[ -n "$vpc_role_exists" && -n "$logs_role_exists" ]]; then
+            echo -e "${YELLOW}ただし、必要なIAMロール（dms-vpc-role, dms-cloudwatch-logs-role）は既に存在します${NC}"
+
+            # 既存のロールのARNを表示
+            local vpc_role_arn=$(aws iam get-role --role-name dms-vpc-role --query "Role.Arn" --output text)
+            local logs_role_arn=$(aws iam get-role --role-name dms-cloudwatch-logs-role --query "Role.Arn" --output text)
+
+            echo -e "${BLUE}DMS VPC ロールARN:${NC} $vpc_role_arn"
+            echo -e "${BLUE}DMS CloudWatch Logs ロールARN:${NC} $logs_role_arn"
+
+            echo -e "${YELLOW}スタックを削除するには ${YELLOW}./run.sh delete-iam${NC} を実行してください${NC}"
+        else
+            echo -e "${RED}必要なIAMロールも存在しません。スタックを削除してから再デプロイしてください${NC}"
+            echo -e "${YELLOW}スタックを削除するには ${YELLOW}./run.sh delete-iam${NC} を実行してください${NC}"
+        fi
+    else
+        echo -e "${YELLOW}IAMロールスタックは現在 $stack_status 状態です${NC}"
+    fi
 }
 
 # メイン処理
@@ -1091,6 +1245,15 @@ case $command in
         ;;
     delete-dms)
         delete_dms_stack
+        ;;
+    deploy-iam)
+        deploy_iam_stack
+        ;;
+    delete-iam)
+        delete_iam_stack
+        ;;
+    status-iam)
+        show_iam_status
         ;;
     help)
         show_help
