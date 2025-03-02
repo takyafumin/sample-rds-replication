@@ -90,29 +90,26 @@ read -p "データベースユーザー名: " DB_USERNAME
 read -sp "データベースパスワード: " DB_PASSWORD
 echo ""
 
-# サンプルデータベースのダウンロード
-echo "サンプルデータベースをダウンロード中..."
+# サンプルデータディレクトリの確認
+echo "サンプルデータディレクトリを確認中..."
 mkdir -p "$SAMPLE_DATA_DIR"
 cd "$SAMPLE_DATA_DIR"
 
-# World データベース
+# World データベースファイルの確認
 if [ ! -f world.sql ]; then
-  echo "World データベースをダウンロード中..."
-  wget -q https://downloads.mysql.com/docs/world.sql.gz
-  gunzip world.sql.gz
+  echo "エラー: world.sql ファイルが見つかりません。"
+  echo "resources/samples ディレクトリに world.sql ファイルを手動で配置してください。"
+  exit 1
 fi
 
-# Employees データベース
+# Employees データベースファイルの確認
 if [ ! -f employees.sql ]; then
-  echo "Employees データベースをダウンロード中..."
-  wget -q https://github.com/datacharmer/test_db/archive/refs/heads/master.zip
-  unzip -q master.zip
-  cd test_db-master
-  # 必要なファイルを結合
-  cat employees.sql load_departments.dump load_employees.dump load_dept_emp.dump load_dept_manager.dump load_titles.dump load_salaries.dump > ../employees.sql
-  cd ..
-  rm -rf test_db-master master.zip
+  echo "エラー: employees.sql ファイルが見つかりません。"
+  echo "resources/samples ディレクトリに employees.sql ファイルを手動で配置してください。"
+  exit 1
 fi
+
+echo "必要なファイルが見つかりました。データベースのインポートを開始します..."
 
 # セカンドDBにサンプルデータベースをインポート
 echo "セカンドDBにWorld データベースをインポート中..."

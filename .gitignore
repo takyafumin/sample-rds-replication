@@ -10,7 +10,8 @@ Thumbs.db
 .idea/
 
 # サンプルデータベースファイル
-/resources/samples/
+/resources/samples/*
+!/resources/samples/README.md
 /sample_data/
 /data/
 
