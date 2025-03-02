@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: 'RDSレプリケーション検証環境 - 初期構成'
+Description: 'RDSレプリケーション検証環境 - Aurora MySQL構成'
 
 Parameters:
   MasterDBName:
@@ -14,7 +14,7 @@ Parameters:
 
   DBInstanceClass:
     Type: String
-    Default: db.t3.micro
+    Default: db.t3.medium
     Description: DBインスタンスクラス
 
   DBUsername:
@@ -159,48 +159,64 @@ Resources:
         - Key: Name
           Value: RDS-Subnet-Group
 
-  # マスターRDSインスタンス (RDS1) - hogedbデータベースを持つマスターインスタンス
+  # マスターDBクラスター - hogedbデータベースを持つAuroraクラスター
+  MasterDBCluster:
+    Type: AWS::RDS::DBCluster
+    Properties:
+      Engine: aurora-mysql
+      EngineVersion: 8.0.mysql_aurora.3.08.1
+      DatabaseName: !Ref MasterDBName
+      MasterUsername: !Ref DBUsername
+      MasterUserPassword: !Ref DBPassword
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VpcSecurityGroupIds:
+        - !Ref DBSecurityGroup
+      BackupRetentionPeriod: 7
+      Tags:
+        - Key: Name
+          Value: RDS1-Master-Cluster
+
+  # マスターDBインスタンス (RDS1) - hogedbデータベースを持つマスターインスタンス
   MasterDBInstance:
     Type: AWS::RDS::DBInstance
     Properties:
       DBInstanceIdentifier: rds1-master
-      AllocatedStorage: 20
       DBInstanceClass: !Ref DBInstanceClass
-      Engine: mysql
-      EngineVersion: 8.0.28
-      MasterUsername: !Ref DBUsername
-      MasterUserPassword: !Ref DBPassword
-      DBName: !Ref MasterDBName
-      VPCSecurityGroups:
-        - !Ref DBSecurityGroup
-      DBSubnetGroupName: !Ref DBSubnetGroup
-      BackupRetentionPeriod: 7
-      MultiAZ: false
+      Engine: aurora-mysql
+      EngineVersion: 8.0.mysql_aurora.3.08.1
+      DBClusterIdentifier: !Ref MasterDBCluster
       PubliclyAccessible: false
-      StorageType: gp2
       Tags:
         - Key: Name
           Value: RDS1-Master
 
-  # 2つ目のRDSインスタンス (RDS2) - fugadbデータベースを持つ独立したインスタンス
+  # 2つ目のDBクラスター - fugadbデータベースを持つAuroraクラスター
+  SecondDBCluster:
+    Type: AWS::RDS::DBCluster
+    Properties:
+      Engine: aurora-mysql
+      EngineVersion: 8.0.mysql_aurora.3.08.1
+      DatabaseName: !Ref SecondDBName
+      MasterUsername: !Ref DBUsername
+      MasterUserPassword: !Ref DBPassword
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VpcSecurityGroupIds:
+        - !Ref DBSecurityGroup
+      BackupRetentionPeriod: 7
+      Tags:
+        - Key: Name
+          Value: RDS2-Second-Cluster
+
+  # 2つ目のDBインスタンス (RDS2) - fugadbデータベースを持つ独立したインスタンス
   SecondDBInstance:
     Type: AWS::RDS::DBInstance
     Properties:
       DBInstanceIdentifier: rds2-second
-      AllocatedStorage: 20
       DBInstanceClass: !Ref DBInstanceClass
-      Engine: mysql
-      EngineVersion: 8.0.28
-      MasterUsername: !Ref DBUsername
-      MasterUserPassword: !Ref DBPassword
-      DBName: !Ref SecondDBName
-      VPCSecurityGroups:
-        - !Ref DBSecurityGroup
-      DBSubnetGroupName: !Ref DBSubnetGroup
-      BackupRetentionPeriod: 7
-      MultiAZ: false
+      Engine: aurora-mysql
+      EngineVersion: 8.0.mysql_aurora.3.08.1
+      DBClusterIdentifier: !Ref SecondDBCluster
       PubliclyAccessible: false
-      StorageType: gp2
       Tags:
         - Key: Name
           Value: RDS2-Second
@@ -209,9 +225,19 @@ Outputs:
   # マスターDBのエンドポイント - RDS1への接続情報
   MasterDBEndpoint:
     Description: マスターDBのエンドポイント
-    Value: !GetAtt MasterDBInstance.Endpoint.Address
+    Value: !GetAtt MasterDBCluster.Endpoint.Address
+
+  # マスターDBのリードエンドポイント
+  MasterDBReadEndpoint:
+    Description: マスターDBのリードエンドポイント
+    Value: !GetAtt MasterDBCluster.ReadEndpoint.Address
 
   # 2つ目のDBのエンドポイント - RDS2への接続情報
   SecondDBEndpoint:
     Description: 2つ目のDBのエンドポイント
-    Value: !GetAtt SecondDBInstance.Endpoint.Address
+    Value: !GetAtt SecondDBCluster.Endpoint.Address
+
+  # 2つ目のDBのリードエンドポイント
+  SecondDBReadEndpoint:
+    Description: 2つ目のDBのリードエンドポイント
+    Value: !GetAtt SecondDBCluster.ReadEndpoint.Address
