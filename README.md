@@ -1,269 +1,169 @@
-# RDSレプリケーション検証環境
+# AWS DMS レプリケーション検証環境
 
-## 概要
+このリポジトリには、AWS DMS（Database Migration Service）を使用して、Aurora MySQL データベース間でのレプリケーションを設定するためのCloudFormationテンプレートとヘルパースクリプトが含まれています。
 
-このプロジェクトはAWS RDSインスタンス間のレプリケーション検証環境を簡単に構築・管理するためのツールを提供します。補助スクリプト `run.sh` を使用することで、複雑なAWS CLIコマンドを実行することなく、環境の構築から操作までをシンプルに行うことができます。
-
-## 構成
-
-- VPC、サブネット、セキュリティグループなどのネットワークリソース
-- 2つのRDSインスタンス（MySQL 8.0.28）
-  - マスターDB: `hogedb`（デフォルト、変更可能）
-  - セカンドDB: `fugadb`（デフォルト、変更可能）
-- SSM接続可能な踏み台EC2インスタンス
-  - プライベートサブネットに配置
-  - MySQLクライアントがプリインストール済み
-
-## 構成図
+## アーキテクチャ概要
 
 ```mermaid
-graph TB
-    %% 外部ユーザー
-    User((ユーザー))
-
-    %% AWS クラウド
-    subgraph AWS["AWS Cloud"]
-        %% VPC
-        subgraph VPC["VPC (10.0.0.0/16)"]
-            %% パブリックサブネット
-            subgraph PublicSubnets["パブリックサブネット"]
-                PublicSubnet1["パブリックサブネット1<br>10.0.1.0/24<br>AZ1"]
-                PublicSubnet2["パブリックサブネット2<br>10.0.2.0/24<br>AZ2"]
-            end
-
-            %% プライベートサブネット
-            subgraph PrivateSubnets["プライベートサブネット"]
-                subgraph PrivateSubnet1["プライベートサブネット1<br>10.0.3.0/24<br>AZ1"]
-                    %% EC2踏み台サーバー
-                    EC2["踏み台EC2インスタンス<br>MySQL Client"]
-                end
-
-                PrivateSubnet2["プライベートサブネット2<br>10.0.4.0/24<br>AZ2"]
-
-                %% RDSインスタンス
-                subgraph MasterDB["マスターDBクラスター"]
-                    RDS1["RDS1-Master<br>hogedb<br>Aurora MySQL 8.0"]
-                end
-
-                subgraph SecondDB["セカンドDBクラスター"]
-                    RDS2["RDS2-Second<br>fugadb<br>Aurora MySQL 8.0"]
-                end
-            end
+graph TD
+    subgraph "VPC"
+        subgraph "パブリックサブネット"
+            EC2["踏み台EC2インスタンス"]
         end
 
-        %% SSMエンドポイント
-        SSM["SSM<br>エンドポイント"]
+        subgraph "プライベートサブネット"
+            DMS["DMSレプリケーション\nインスタンス"]
+
+            subgraph "マスターDBクラスター"
+                MasterDB["Aurora MySQL\n(ターゲット)"]
+                MasterDBR["Aurora MySQL\nレプリカ"]
+            end
+
+            subgraph "セカンドDBクラスター"
+                SecondDB["Aurora MySQL\n(ソース)"]
+                SecondDBR["Aurora MySQL\nレプリカ"]
+            end
+        end
     end
 
-    %% 接続関係
-    User -->|SSM Session| SSM
-    SSM -->|接続| EC2
-    EC2 -->|MySQL接続| RDS1
-    EC2 -->|MySQL接続| RDS2
+    User["ユーザー"] -->|SSM接続| EC2
+    EC2 -->|管理| MasterDB
+    EC2 -->|管理| SecondDB
 
-    %% スタイル設定
-    classDef subnet fill:#e4f7fb,stroke:#333,stroke-width:1px;
-    classDef ec2 fill:#f9d77e,stroke:#333,stroke-width:1px;
-    classDef rds fill:#a1d4b1,stroke:#333,stroke-width:1px;
-    classDef service fill:#f8cecc,stroke:#333,stroke-width:1px;
+    SecondDB -->|ソース\nエンドポイント| DMS
+    DMS -->|ターゲット\nエンドポイント| MasterDB
 
-    class PublicSubnet1,PublicSubnet2,PrivateSubnet1,PrivateSubnet2 subnet;
-    class EC2 ec2;
-    class RDS1,RDS2 rds;
-    class SSM service;
+    SecondDB -->|レプリケーション| SecondDBR
+    MasterDB -->|レプリケーション| MasterDBR
+
+    classDef aws fill:#FF9900,stroke:#232F3E,color:white;
+    class EC2,DMS,MasterDB,MasterDBR,SecondDB,SecondDBR aws;
 ```
 
-## 前提条件
+詳細なアーキテクチャについては、[アーキテクチャ概要](doc/architecture.md)を参照してください。
 
-- AWS CLIがインストールされていること
-- AWS認証情報が設定されていること
-- CloudFormationスタックを作成するための適切なIAM権限があること
-- SSMセッションマネージャーを使用するための権限があること
-- SSMセッションマネージャープラグインがインストールされていること（ポートフォワーディング機能を使用する場合）
+## 目次
+
+- [環境構成](#環境構成)
+- [クイックスタート](#クイックスタート)
+- [詳細ドキュメント](#詳細ドキュメント)
+- [ヘルパースクリプト](#ヘルパースクリプト)
+- [注意事項](#注意事項)
+- [クリーンアップ](#クリーンアップ)
+
+## 環境構成
+
+このソリューションは以下の2つのCloudFormationスタックで構成されています：
+
+1. **rds-replication.yaml** - 基本的なAurora MySQL環境（マスターDBとセカンドDB）を構築
+2. **dms-replication.yaml** - DMSレプリケーションを設定し、セカンドDBからマスターDBへのレプリケーションを構成
 
 ## クイックスタート
 
-```bash
-# 1. スクリプトに実行権限を付与
-chmod +x run.sh
-
-# 2. スタックをデプロイ（約15-20分かかります）
-./run.sh deploy --db-password YourSecurePassword123
-
-# 3. スタックのステータスを確認
-./run.sh status
-
-# 4. 踏み台EC2インスタンスに接続
-./run.sh connect-ec2
-
-# 5. マスターDBへのポートフォワーディングを設定
-./run.sh port-forward-master
-
-# 6. 使用後はリソースを削除
-./run.sh delete
-```
-
-## 詳細な使い方
-
-### 1. 環境のセットアップ
-
-まず、スクリプトに実行権限を付与します：
+### ステップ1: 基本的なAurora MySQL環境をデプロイ
 
 ```bash
-chmod +x run.sh
+aws cloudformation deploy \
+  --template-file rds-replication.yaml \
+  --stack-name aurora-mysql-env \
+  --parameter-overrides \
+    DBUsername=admin \
+    DBPassword=YourStrongPassword \
+    MasterDBName=hogedb \
+    SecondDBName=fugadb \
+  --capabilities CAPABILITY_IAM
 ```
 
-ヘルプを表示して、利用可能なコマンドを確認できます：
+### ステップ2: サンプルデータベースをインポート
+
+踏み台サーバーにSSM経由で接続し、サンプルデータベースをインポートします。
 
 ```bash
-./run.sh help
+# SSM経由で踏み台サーバーに接続
+aws ssm start-session --target $(aws cloudformation describe-stacks --stack-name aurora-mysql-env --query "Stacks[0].Outputs[?OutputKey=='BastionInstanceId'].OutputValue" --output text)
+
+# 踏み台サーバー上で以下を実行
+chmod +x import_sample_db.sh
+./import_sample_db.sh aurora-mysql-env
 ```
 
-### 2. 環境のデプロイ
-
-最小限の設定でデプロイする場合（DBパスワードのみ指定）：
+### ステップ3: DMSレプリケーションをデプロイ
 
 ```bash
-./run.sh deploy --db-password YourSecurePassword123
+aws cloudformation deploy \
+  --template-file dms-replication.yaml \
+  --stack-name dms-replication \
+  --parameter-overrides \
+    ExistingStackName=aurora-mysql-env \
+    DBUsername=admin \
+    DBPassword=YourStrongPassword \
+    SourceDatabaseName=world \
+  --capabilities CAPABILITY_IAM
 ```
 
-カスタム設定でデプロイする場合：
+### ステップ4: レプリケーションを検証
+
+踏み台サーバーでレプリケーション検証スクリプトを実行します。
 
 ```bash
-./run.sh deploy \
-  --db-password YourSecurePassword123 \
-  --db-username customadmin \
-  --master-db-name masterdb \
-  --second-db-name seconddb \
-  --db-instance-class db.t3.small \
-  --ec2-instance-type t3.small
+# 踏み台サーバー上で以下を実行
+chmod +x verify_replication.sh
+./verify_replication.sh aurora-mysql-env
 ```
 
-### 3. 環境の管理
+詳細な手順については、[デプロイガイド](doc/deployment-guide.md)を参照してください。
 
-スタックのステータスを確認：
+## 詳細ドキュメント
+
+- [アーキテクチャ概要](doc/architecture.md) - ソリューションのアーキテクチャと構成要素の詳細
+- [CloudFormationテンプレート](doc/cloudformation-templates.md) - テンプレートの詳細な説明
+- [ヘルパースクリプト](doc/helper-scripts.md) - 各スクリプトの機能と使用方法
+- [デプロイガイド](doc/deployment-guide.md) - 詳細なデプロイ手順とトラブルシューティング
+
+## ヘルパースクリプト
+
+このリポジトリには以下のヘルパースクリプトが含まれています：
+
+1. **import_sample_db.sh** - サンプルデータベース（WorldとEmployees）をセカンドDBにインポートし、マスターDBに空のWorldデータベースを作成
+2. **verify_replication.sh** - レプリケーションが正常に機能しているかを検証
+3. **manage_dms_task.sh** - DMSタスクの管理（開始、停止、ステータス確認、再起動）
+
+スクリプトの詳細については、[ヘルパースクリプト](doc/helper-scripts.md)を参照してください。
+
+## DMSタスクの管理
+
+DMSタスクを管理するには、以下のコマンドを使用します：
 
 ```bash
-./run.sh status
+# タスクのステータスを確認
+./manage_dms_task.sh dms-replication status
+
+# タスクを停止
+./manage_dms_task.sh dms-replication stop
+
+# タスクを開始
+./manage_dms_task.sh dms-replication start
+
+# タスクを再起動
+./manage_dms_task.sh dms-replication restart
 ```
-
-スタックの出力値（エンドポイントなど）を表示：
-
-```bash
-./run.sh outputs
-```
-
-スタックを更新（パスワードを変更）：
-
-```bash
-./run.sh update --db-password NewPassword123
-```
-
-スタックを更新（EC2インスタンスタイプのみ変更、既存のパスワードを使用）：
-
-```bash
-./run.sh update --use-previous-password --ec2-instance-type t3.small
-```
-
-スタックを削除（すべてのリソースを削除）：
-
-```bash
-./run.sh delete
-```
-
-### 4. データベースへのアクセス
-
-#### 踏み台EC2インスタンスに直接接続
-
-```bash
-./run.sh connect-ec2
-```
-
-接続後、EC2インスタンス上で以下のコマンドを実行してデータベースに接続できます：
-
-```bash
-# マスターDBに接続
-mysql -h $(cat /home/ec2-user/db-scripts/db_info.txt | grep MASTER_ENDPOINT | cut -d'=' -f2) -u admin -p hogedb
-
-# または、作成済みのエイリアスを使用
-master-db
-
-# セカンドDBに接続
-mysql -h $(cat /home/ec2-user/db-scripts/db_info.txt | grep SECOND_ENDPOINT | cut -d'=' -f2) -u admin -p fugadb
-
-# または、作成済みのエイリアスを使用
-second-db
-```
-
-#### ローカルマシンからデータベースに接続（ポートフォワーディング）
-
-マスターDBへのポートフォワーディングを設定（デフォルトはローカルポート3306）：
-
-```bash
-./run.sh port-forward-master
-```
-
-セカンドDBへのポートフォワーディングを設定（デフォルトはローカルポート3307）：
-
-```bash
-./run.sh port-forward-second
-```
-
-カスタムローカルポートを指定してポートフォワーディング：
-
-```bash
-./run.sh port-forward-master --local-port 13306
-./run.sh port-forward-second --local-port 13307
-```
-
-ポートフォワーディングが確立されたら、別のターミナルウィンドウで以下のコマンドを実行してRDSに接続できます：
-
-```bash
-# マスターDBへの接続
-mysql -h 127.0.0.1 -P 3306 -u admin -p hogedb
-
-# セカンドDBへの接続
-mysql -h 127.0.0.1 -P 3307 -u admin -p fugadb
-```
-
-## パラメータ一覧
-
-### deployコマンドのパラメータ
-
-| パラメータ | 説明 | デフォルト値 | 必須 |
-|------------|------|------------|------|
-| `--db-password` | データベースのパスワード | - | はい |
-| `--db-username` | データベースのユーザー名 | admin | いいえ |
-| `--master-db-name` | マスターデータベース名 | hogedb | いいえ |
-| `--second-db-name` | セカンドデータベース名 | fugadb | いいえ |
-| `--db-instance-class` | DBインスタンスクラス | db.t3.medium | いいえ |
-| `--ec2-instance-type` | EC2インスタンスタイプ | t3.micro | いいえ |
-
-### updateコマンドの追加パラメータ
-
-| パラメータ | 説明 |
-|------------|------|
-| `--use-previous-password` | 既存のDBパスワードを使用 |
-| `--use-previous-username` | 既存のDBユーザー名を使用 |
-| `--use-previous-master-db-name` | 既存のマスターDB名を使用 |
-| `--use-previous-second-db-name` | 既存のセカンドDB名を使用 |
-| `--use-previous-db-instance-class` | 既存のDBインスタンスクラスを使用 |
-| `--use-previous-ec2-instance-type` | 既存のEC2インスタンスタイプを使用 |
-
-## トラブルシューティング
-
-1. **接続エラー**: EC2インスタンスがRDSエンドポイントに到達できることを確認してください。セキュリティグループの設定を確認します。
-
-2. **権限エラー**: AWS CLIの認証情報と、SSMセッションマネージャーを使用するための適切なIAM権限があることを確認してください。
-
-3. **ポートの競合**: ローカルポートが既に使用されている場合は、`--local-port` オプションで別のポート番号を指定してください。
-
-4. **Session Managerプラグインのエラー**: プラグインが正しくインストールされていることを確認してください。インストール方法は[AWS公式ドキュメント](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html)を参照してください。
-
-5. **スタックの作成/更新エラー**: `./run.sh status` コマンドを実行して詳細なエラーメッセージを確認してください。
 
 ## 注意事項
 
-- このプロジェクトは検証環境用です。本番環境で使用する場合は、適切なセキュリティ設定を行ってください。
-- 使用後はリソースを削除して、不要な料金が発生しないようにしてください。
-- RDSインスタンスは料金が発生します。特にdb.t3.mediumクラスは比較的コストが高いため、長時間の使用には注意してください。
+1. **バイナリログの有効化**: レプリケーションを機能させるためには、セカンドDBでバイナリログが有効になっている必要があります。既存のテンプレートではこれが設定されていることを前提としています。
+
+2. **データベースユーザー権限**: レプリケーションに使用するデータベースユーザーには、適切な権限（REPLICATION CLIENT, REPLICATION SLAVE）が必要です。
+
+3. **コスト**: DMSインスタンスとAurora MySQLクラスターは料金が発生します。不要になった場合は、スタックを削除してください。
+
+## クリーンアップ
+
+環境を削除するには、以下の順序でスタックを削除します：
+
+```bash
+# 1. DMSレプリケーションスタックを削除
+aws cloudformation delete-stack --stack-name dms-replication
+
+# 2. Aurora MySQL環境スタックを削除
+aws cloudformation delete-stack --stack-name aurora-mysql-env
+```
